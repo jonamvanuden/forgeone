@@ -38,6 +38,19 @@
 .doc .toc li { break-inside: avoid; }
 .doc .key { color: var(--d-violet-700); font-weight: 600; }
 
+@media (max-width: 720px) {
+  .doc { font-size: 15px; }
+  .doc h1 { font-size: 26px; }
+  .doc h2 { font-size: 19px; margin-top: 36px; }
+  .doc .toc { columns: 1; }
+  .doc table { display: block; overflow-x: auto; white-space: normal; }
+  .doc td, .doc th { min-width: 110px; }
+  .doc figure { padding: 10px; margin-left: 0; margin-right: 0; overflow-x: auto; }
+  .doc figure svg { min-width: 520px; }
+  .doc .summary { padding: 18px; }
+  .doc pre { font-size: 11.5px; }
+}
+
 @media print {
   @page { size: A4; margin: 16mm 15mm 18mm; }
   body { margin: 0; background: #fff; }

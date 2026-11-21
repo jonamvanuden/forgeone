@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d1340">
   <title>ForgeOne Control Room</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,7 +25,7 @@
         <a href="#/" data-nav="home"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</a>
         <a href="#/goals" data-nav="goals"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/></svg>Goals</a>
         <span class="group">Project</span>
-        <a href="#/docs" data-nav="docs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg>Project docs</a>
+        <a href="#/docs" data-nav="docs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></svg><span class="lbl-long">Project docs</span><span class="lbl-short">Docs</span></a>
         <span class="group">Health</span>
         <a href="#/errors" data-nav="errors"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.2v.1"/></svg>Errors<span class="badge" id="err-badge" hidden></span></a>
       </nav>
@@ -32,6 +33,7 @@
     </aside>
     <div class="work">
       <header class="topbar">
+        <a class="m-brand" href="#/" aria-label="ForgeOne overview"><span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="4" height="9" rx="1"/><rect x="10" y="5" width="4" height="15" rx="1"/><rect x="16" y="14" width="4" height="6" rx="1"/></svg></span></a>
         <div class="crumbs" id="crumbs"></div>
         <span class="env"><span class="dot" aria-hidden="true"></span>cashgrab.online</span>
       </header>
