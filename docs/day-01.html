@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgeOne, Day 1: Foundations</title>
+<link rel="stylesheet" href="docs.css">
+<style>body { margin: 0; padding: 40px 24px; background: #fff; } .doc { margin: 0 auto; }</style>
+</head>
+<body>
+<article class="doc" id="doc">
+
+<h1>ForgeOne, Day 1: Foundations</h1>
+<div class="doc-meta">Saturday 21 November 2026. Study guide for everything built so far, plus the plan for the part that matters most: the feedback loop.</div>
+
+<div class="summary">
+  <h3>Where we stand at the end of Day 1</h3>
+  <ul>
+    <li><strong>ForgeOne</strong>, the builder, is a LangGraph graph with two nodes: <code>plan</code> and <code>build</code>. Given a goal, it designs an agent and writes it down as a validated <strong>AgentSpec</strong>.</li>
+    <li><strong>VoyagerOne</strong>, the web discovery agent, exists as a spec: a system prompt, a tool list, a step budget and test cases. It cannot browse yet; its tools are the next step.</li>
+    <li>Every run is <strong>fully observable</strong>: each step, model call (with the exact prompt, answer, tokens, latency and cost), decision, artifact and error is logged as structured events, to files and to Postgres.</li>
+    <li>A <strong>Control Room</strong> dashboard runs at cashgrab.online: goals, builds, spec versions with diffs, model calls, errors and cost.</li>
+    <li>The code lives in GitHub (<code>jonamvanuden/ForgeOne</code>). Claude pushes changes; the server deploys them with <code>git pull</code>.</li>
+    <li>Builds run on <strong>Claude Haiku 5.5</strong> by default, about 20 times cheaper than Sonnet 5.5.</li>
+  </ul>
+</div>
+
+<ol class="toc">
+  <li>The idea</li>
+  <li>The decisions, and why</li>
+  <li>System architecture</li>
+  <li>The builder graph</li>
+  <li>The AgentSpec contract</li>
+  <li>Observability</li>
+  <li>The event store</li>
+  <li>The Control Room</li>
+  <li>Operations on the server</li>
+  <li>What went wrong, and the lessons</li>
+  <li>Costs</li>
+  <li>The feedback loop</li>
+  <li>Plan for Day 2</li>
+  <li>Glossary</li>
+</ol>
+
+<!-- ============================================================ 1 -->
+<h2><span class="chap">1</span>The idea</h2>
+<p>ForgeOne is an <strong>agent that builds agents</strong>. You give it a goal in plain language, such as "build a web discovery agent that researches a question and writes a sourced report", and it designs, writes and (from Day 2) tests and repairs that agent on its own. The first agent it builds is <strong>VoyagerOne</strong>: an autonomous researcher that searches the web, reads pages, cross-checks facts across sources and writes a report listing the URLs it actually read.</p>
+<p>The core design choice is that ForgeOne <strong>does not write code</strong>. It writes a <strong>spec</strong>: a structured description of the agent (its system prompt, the tools it may use, its step budget and its test cases). A small, fixed runtime turns a spec into a running agent. This keeps every generated agent checkable, diffable and safe: ForgeOne can only choose from tools we wrote and approved, and every version of every agent can be compared line by line.</p>
+
+<!-- ============================================================ 2 -->
+<h2><span class="chap">2</span>The decisions, and why</h2>
+
+<h3>Framework: LangGraph for the builder</h3>
+<p>We compared writing everything from scratch, lightweight SDKs (Pydantic AI, OpenAI Agents SDK, Claude Agent SDK) and full frameworks (LangGraph, CrewAI, AutoGen). We chose <strong>LangGraph</strong> for the builder because its strengths match the builder's job:</p>
+<ul>
+  <li><strong>Cycles:</strong> the builder's main loop is plan, build, test, judge, then back to build. LangGraph models that loop directly, with conditional edges.</li>
+  <li><strong>Checkpointing:</strong> a long autonomous build that crashes on iteration 7 can resume from its last checkpoint instead of starting over.</li>
+  <li><strong>Interrupts:</strong> it can pause for human approval before something important happens.</li>
+</ul>
+<p>The agents ForgeOne <em>generates</em> are not LangGraph code; they are specs. Asking a model to write correct graph code (state schemas, reducers, edges) fails far more often than asking it to fill in a well-defined form, and it would tie every generated agent to LangGraph's API.</p>
+
+<h3>Browser: Playwright first, AI browser tools later</h3>
+<p>Chromium is the browser itself; Playwright, Stagehand and Browser Use are all ways of driving it. The real question is <strong>who decides each click</strong>:</p>
+<table>
+  <tr><th>Option</th><th>Who decides</th><th>Trade-off</th></tr>
+  <tr><td>Playwright</td><td>Our agent; tools are plain code</td><td>No extra model cost, fully visible in our logs, fails on very interactive sites</td></tr>
+  <tr><td>Stagehand</td><td>Our agent says what; Stagehand works out how</td><td>One model call per action, good control</td></tr>
+  <tr><td>Browser Use</td><td>Its own agent decides everything</td><td>Powerful, but a black box inside our agent: two brains, double cost, harder to debug</td></tr>
+</table>
+<p>Decision: VoyagerOne's basic tools (search, open, click, find, write report) use <strong>Playwright</strong>. Later we add one fallback tool backed by Browser Use for interactive pages, and the builder decides when an agent gets it. The reason is the feedback loop: the builder can only repair what it can see, and Playwright steps show up in our traces one by one.</p>
+
+<h3>Repositories</h3>
+<p>We started with the idea of two repositories, one for the builder and one per generated agent. For now everything lives in one repo, <code>ForgeOne</code>. VoyagerOne will get its own repository once it runs on its own; ForgeOne will then publish each new version there as a pull request, so merging becomes your approval.</p>
+
+<h3>Model: Haiku 5.5 by default</h3>
+<p>The first builds ran on Sonnet 5.5 and cost about 5 cents each. We switched the default to <strong>Claude Haiku 5.5</strong>, which costs $0.10 per million input tokens and $0.50 per million output tokens for prompts up to 100,000 tokens, against $2 and $10 for Sonnet 5.5. One build now costs about a third of a cent. The model can be overridden per run with <code>FORGEONE_MODEL=claude-sonnet-5-5</code>, which matters later: you may want a stronger model to judge than to build.</p>
+
+<h3>Two API details we learned</h3>
+<ul>
+  <li><strong>No custom temperature</strong> on the newest models: passing <code>temperature=0.2</code> raises an error, so we leave it at the default.</li>
+  <li><strong>Structured output</strong> uses <code>method="json_schema"</code>. The older default (forced tool calling) is not supported on these models and can fail at random with an <code>OutputParserException</code>.</li>
+</ul>
+
+<!-- ============================================================ 3 -->
+<h2 class="new-page"><span class="chap">3</span>System architecture</h2>
+<p>Everything runs on one Ubuntu server (<code>diskreta18</code>). Only nginx is reachable from the internet; every other service listens on <code>127.0.0.1</code> (localhost) only.</p>
+<figure>
+<svg viewBox="0 0 860 470" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker>
+    <marker id="a1g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7d7699"/></marker>
+  </defs>
+  <!-- outside -->
+  <rect x="10" y="40" width="150" height="70" rx="12" fill="#f1ecff" stroke="#b9a6ff"/>
+  <text x="85" y="70" text-anchor="middle" font-weight="700" fill="#1c1633">You (browser)</text>
+  <text x="85" y="90" text-anchor="middle" fill="#4a4366">cashgrab.online</text>
+  <rect x="10" y="190" width="150" height="70" rx="12" fill="#f1ecff" stroke="#b9a6ff"/>
+  <text x="85" y="220" text-anchor="middle" font-weight="700" fill="#1c1633">Anthropic API</text>
+  <text x="85" y="240" text-anchor="middle" fill="#4a4366">Claude Haiku 5.5</text>
+  <rect x="10" y="360" width="150" height="70" rx="12" fill="#f1ecff" stroke="#b9a6ff"/>
+  <text x="85" y="390" text-anchor="middle" font-weight="700" fill="#1c1633">GitHub</text>
+  <text x="85" y="410" text-anchor="middle" fill="#4a4366">jonamvanuden/ForgeOne</text>
+  <!-- server -->
+  <rect x="210" y="14" width="640" height="446" rx="18" fill="#faf9fe" stroke="#1d1340" stroke-width="1.5"/>
+  <text x="230" y="40" font-weight="700" fill="#1d1340" font-size="13">Server diskreta18 (Ubuntu)</text>
+  <text x="840" y="40" text-anchor="end" fill="#7d7699">only nginx is public</text>
+  <rect x="240" y="60" width="170" height="64" rx="10" fill="#fff" stroke="#6c47ff"/>
+  <text x="325" y="86" text-anchor="middle" font-weight="700" fill="#1c1633">nginx</text>
+  <text x="325" y="105" text-anchor="middle" fill="#4a4366">ports 80/443, HTTPS (certbot)</text>
+  <rect x="460" y="60" width="200" height="64" rx="10" fill="#fff" stroke="#6c47ff"/>
+  <text x="560" y="86" text-anchor="middle" font-weight="700" fill="#1c1633">Control Room</text>
+  <text x="560" y="105" text-anchor="middle" fill="#4a4366">uvicorn, 127.0.0.1:8501</text>
+  <rect x="460" y="190" width="200" height="70" rx="10" fill="#1d1340"/>
+  <text x="560" y="218" text-anchor="middle" font-weight="700" fill="#fff">ForgeOne builder</text>
+  <text x="560" y="238" text-anchor="middle" fill="#b9a6ff">python -m forgeone.graph</text>
+  <rect x="700" y="60" width="130" height="64" rx="10" fill="#fff" stroke="#6c47ff"/>
+  <text x="765" y="86" text-anchor="middle" font-weight="700" fill="#1c1633">systemd</text>
+  <text x="765" y="105" text-anchor="middle" fill="#4a4366">keeps it running</text>
+  <rect x="700" y="300" width="130" height="80" rx="10" fill="#fff" stroke="#6c47ff"/>
+  <text x="765" y="328" text-anchor="middle" font-weight="700" fill="#1c1633">Postgres 17</text>
+  <text x="765" y="347" text-anchor="middle" fill="#4a4366">Docker</text>
+  <text x="765" y="364" text-anchor="middle" fill="#4a4366">127.0.0.1:5433</text>
+  <rect x="460" y="310" width="200" height="60" rx="10" fill="#fff" stroke="#b9a6ff" stroke-dasharray="4 3"/>
+  <text x="560" y="335" text-anchor="middle" font-weight="700" fill="#1c1633">runs/&lt;run_id&gt;/</text>
+  <text x="560" y="354" text-anchor="middle" fill="#4a4366">events.jsonl + payloads</text>
+  <rect x="240" y="360" width="170" height="70" rx="10" fill="#fff" stroke="#6c47ff"/>
+  <text x="325" y="388" text-anchor="middle" font-weight="700" fill="#1c1633">~/ForgeOne (git)</text>
+  <text x="325" y="408" text-anchor="middle" fill="#4a4366">deploy key: github-forgeone</text>
+  <!-- arrows -->
+  <path d="M160 75 H236" stroke="#6c47ff" stroke-width="2" marker-end="url(#a1)" fill="none"/>
+  <path d="M410 92 H456" stroke="#6c47ff" stroke-width="2" marker-end="url(#a1)" fill="none"/>
+  <path d="M700 92 H664" stroke="#7d7699" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a1g)" fill="none"/>
+  <text x="682" y="84" text-anchor="middle" fill="#7d7699" font-size="10">runs</text>
+  <path d="M640 124 C 700 170, 740 230, 765 296" stroke="#6c47ff" stroke-width="2" marker-end="url(#a1)" fill="none"/>
+  <text x="725" y="200" fill="#4a4366" font-size="11">reads</text>
+  <path d="M460 225 H164" stroke="#6c47ff" stroke-width="2" marker-end="url(#a1)" fill="none"/>
+  <text x="310" y="217" text-anchor="middle" fill="#4a4366" font-size="11">prompts, answers</text>
+  <path d="M560 260 V306" stroke="#6c47ff" stroke-width="2" marker-end="url(#a1)" fill="none"/>
+  <text x="566" y="288" fill="#4a4366" font-size="11">events</text>
+  <path d="M660 240 C 700 250, 730 270, 750 296" stroke="#6c47ff" stroke-width="2" marker-end="url(#a1)" fill="none"/>
+  <path d="M164 395 H236" stroke="#7d7699" stroke-width="1.5" marker-end="url(#a1g)" fill="none"/>
+  <text x="200" y="387" text-anchor="middle" fill="#7d7699" font-size="10">git pull</text>
+  <text x="85" y="452" text-anchor="middle" fill="#7d7699" font-size="10.5">Claude pushes here</text>
+</svg>
+<figcaption>Figure 1. The whole system. The builder sends prompts to Claude and writes every event twice: to files (the source of truth) and to Postgres (for the dashboard). The dashboard only reads.</figcaption>
+</figure>
+
+<table>
+  <tr><th>Component</th><th>Where</th><th>Listens on</th></tr>
+  <tr><td>nginx (public entry, HTTPS)</td><td><code>/etc/nginx/sites-available/cashgrab.online</code></td><td>80, 443 (public)</td></tr>
+  <tr><td>Control Room (Starlette app run by uvicorn)</td><td><code>~/ForgeOne/dashboard/</code>, service <code>forgeone-dashboard</code></td><td>127.0.0.1:8501</td></tr>
+  <tr><td>Postgres 17 (Docker container <code>forgeone-db</code>)</td><td><code>~/ForgeOne/docker-compose.yml</code></td><td>127.0.0.1:5433</td></tr>
+  <tr><td>ForgeOne builder</td><td><code>~/ForgeOne/forgeone/</code></td><td>runs on demand</td></tr>
+  <tr><td>Run logs</td><td><code>~/ForgeOne/runs/&lt;run_id&gt;/</code></td><td>files</td></tr>
+</table>
+
+<h3>Project layout</h3>
+<pre><code>ForgeOne/
+  forgeone/            the builder
+    graph.py           LangGraph graph: plan -&gt; build
+    spec.py            AgentSpec contract + tool catalog
+    observability.py   structured logging, tracing, LLM call logger
+    store.py           Postgres sink, backfill, CLI
+  dashboard/           the Control Room
+    server.py          JSON API + pricing
+    db.py              all SQL (read-only)
+    static/            index.html, app.css, app.js
+  db/schema.sql        tables + views
+  docs/                project documents (this file)
+  goals/voyagerone.md  the goal ForgeOne works from
+  docker-compose.yml   Postgres
+  .env                 secrets (never committed)</code></pre>
+
+<!-- ============================================================ 4 -->
+<h2><span class="chap">4</span>The builder graph</h2>
+<p>A LangGraph program has three building blocks:</p>
+<ul>
+  <li><strong>State:</strong> a typed dictionary every step can read (<code>ForgeState</code> with <code>goal</code>, <code>plan</code>, <code>spec</code>).</li>
+  <li><strong>Nodes:</strong> plain Python functions. A node receives the state and returns only the keys it changes, for example <code>{"plan": "..."}</code>. LangGraph merges that update into the state.</li>
+  <li><strong>Edges:</strong> the order of the nodes. Normal edges always go to the next node; conditional edges choose the next node from the state, which is how loops are built.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 860 250" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker>
+    <marker id="a2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#b9a6ff"/></marker>
+  </defs>
+  <text x="20" y="24" font-weight="700" fill="#1c1633">Built today</text>
+  <text x="430" y="24" font-weight="700" fill="#7d7699">Next: the feedback loop</text>
+  <circle cx="40" cy="80" r="16" fill="#1d1340"/><text x="40" y="84" text-anchor="middle" fill="#fff" font-size="10">START</text>
+  <rect x="80" y="56" width="110" height="48" rx="10" fill="#6c47ff"/><text x="135" y="85" text-anchor="middle" fill="#fff" font-weight="700">plan</text>
+  <rect x="230" y="56" width="110" height="48" rx="10" fill="#6c47ff"/><text x="285" y="85" text-anchor="middle" fill="#fff" font-weight="700">build</text>
+  <path d="M56 80 H76" stroke="#6c47ff" stroke-width="2" marker-end="url(#a2)"/>
+  <path d="M190 80 H226" stroke="#6c47ff" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="135" y="124" text-anchor="middle" fill="#4a4366" font-size="11">goal -&gt; build plan</text>
+  <text x="285" y="124" text-anchor="middle" fill="#4a4366" font-size="11">plan -&gt; AgentSpec</text>
+  <rect x="430" y="56" width="90" height="48" rx="10" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="475" y="85" text-anchor="middle" fill="#5330e6" font-weight="700">test</text>
+  <rect x="560" y="56" width="90" height="48" rx="10" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="605" y="85" text-anchor="middle" fill="#5330e6" font-weight="700">judge</text>
+  <rect x="700" y="56" width="130" height="48" rx="10" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="765" y="85" text-anchor="middle" fill="#5330e6" font-weight="700">save / publish</text>
+  <path d="M340 80 H426" stroke="#b9a6ff" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#a2g)"/>
+  <path d="M520 80 H556" stroke="#b9a6ff" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#a2g)"/>
+  <path d="M650 80 H696" stroke="#b9a6ff" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#a2g)"/>
+  <text x="673" y="72" text-anchor="middle" fill="#12a06b" font-size="10.5">pass</text>
+  <path d="M605 104 C 605 200, 285 200, 285 108" stroke="#d9435a" stroke-width="2" stroke-dasharray="5 3" fill="none" marker-end="url(#a2g)"/>
+  <text x="445" y="194" text-anchor="middle" fill="#d9435a" font-size="11">fail and budget left: repair with the judge's diagnosis</text>
+  <text x="430" y="232" fill="#7d7699" font-size="11">Dashed parts are planned for Day 2.</text>
+</svg>
+<figcaption>Figure 2. The builder graph. Today it plans and writes a spec. Next it runs the agent on test tasks, grades the results and repairs the spec until it passes or runs out of budget.</figcaption>
+</figure>
+<p><strong>plan</strong> asks Claude for a build plan in free text: scope, which tools and why, the research method, the stopping rule, the report format and test tasks. <strong>build</strong> turns the plan into a validated <code>AgentSpec</code> using structured output. If the model returns something that does not fit the schema, the call fails instead of silently producing a broken agent.</p>
+<p>Run it with <code>python -m forgeone.graph</code>. It reads <code>goals/voyagerone.md</code> and writes the spec to <code>runs/&lt;run_id&gt;/spec.yaml</code> and to the database.</p>
+
+<!-- ============================================================ 5 -->
+<h2><span class="chap">5</span>The AgentSpec contract</h2>
+<p>The spec is the boundary between "what the builder may decide" and "what we control". It is a Pydantic model in <code>forgeone/spec.py</code>:</p>
+<table>
+  <tr><th>Field</th><th>Meaning</th><th>Rule</th></tr>
+  <tr><td><code>name</code></td><td>Identifier, e.g. <code>voyagerone</code></td><td>kebab-case</td></tr>
+  <tr><td><code>description</code></td><td>One paragraph about the agent</td><td></td></tr>
+  <tr><td><code>system_prompt</code></td><td>The agent's entire "brain": role, method, source rules, stopping rule, report format</td><td>the most important field</td></tr>
+  <tr><td><code>tools</code></td><td>Which tools the agent may call</td><td>only from the catalog, enforced by <code>Literal</code></td></tr>
+  <tr><td><code>max_steps</code></td><td>Maximum tool calls per task</td><td>5 to 60</td></tr>
+  <tr><td><code>test_cases</code></td><td>Tasks with checkable success criteria</td><td>2 to 4</td></tr>
+</table>
+<p>The tool catalog is <code>web_search</code>, <code>open_page</code>, <code>click</code>, <code>find_on_page</code> and <code>write_report</code>. Because <code>tools</code> is typed as a list of those exact names, the model cannot invent a tool: the schema itself rejects it. This allowlist is the main safety boundary of the whole system.</p>
+<div class="note"><p>The first spec ForgeOne produced already showed good instincts: a rule that every fact must trace to a page opened in the same run, labels for facts (Confirmed, Single-source, Conflicting), and a test asking about a study that does not exist, the "Hartwell-Okafor Study", to check that VoyagerOne refuses to make things up. That trap test is exactly the kind of evaluation chapter 12 is about.</p></div>
+
+<!-- ============================================================ 6 -->
+<h2 class="new-page"><span class="chap">6</span>Observability</h2>
+<p>You cannot improve an agent you cannot see. <code>forgeone/observability.py</code> turns every run into a stream of structured events, each one a single JSON object.</p>
+<figure>
+<svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker></defs>
+  <rect x="10" y="30" width="190" height="230" rx="12" fill="#faf9fe" stroke="#e6e1f3"/>
+  <text x="105" y="54" text-anchor="middle" font-weight="700" fill="#1c1633">Sources of events</text>
+  <rect x="25" y="70" width="160" height="40" rx="8" fill="#fff" stroke="#b9a6ff"/><text x="105" y="95" text-anchor="middle" fill="#1c1633">@traced_node</text>
+  <rect x="25" y="120" width="160" height="40" rx="8" fill="#fff" stroke="#b9a6ff"/><text x="105" y="145" text-anchor="middle" fill="#1c1633">LLMCallLogger</text>
+  <rect x="25" y="170" width="160" height="40" rx="8" fill="#fff" stroke="#b9a6ff"/><text x="105" y="195" text-anchor="middle" fill="#1c1633">log_decision / log_artifact</text>
+  <rect x="25" y="220" width="160" height="30" rx="8" fill="#fff" stroke="#b9a6ff"/><text x="105" y="240" text-anchor="middle" fill="#1c1633">start_run</text>
+  <rect x="250" y="110" width="150" height="70" rx="12" fill="#1d1340"/>
+  <text x="325" y="138" text-anchor="middle" fill="#fff" font-weight="700">log_event()</text>
+  <text x="325" y="158" text-anchor="middle" fill="#b9a6ff" font-size="11">+ run_id, node, iteration</text>
+  <path d="M200 145 H246" stroke="#6c47ff" stroke-width="2" marker-end="url(#a3)"/>
+  <rect x="460" y="30" width="180" height="56" rx="10" fill="#fff" stroke="#6c47ff"/><text x="550" y="54" text-anchor="middle" font-weight="700" fill="#1c1633">Terminal</text><text x="550" y="72" text-anchor="middle" fill="#4a4366" font-size="11">short summary lines</text>
+  <rect x="460" y="112" width="180" height="66" rx="10" fill="#fff" stroke="#6c47ff"/><text x="550" y="136" text-anchor="middle" font-weight="700" fill="#1c1633">events.jsonl</text><text x="550" y="154" text-anchor="middle" fill="#4a4366" font-size="11">+ payloads/ (full prompts)</text><text x="550" y="170" text-anchor="middle" fill="#12a06b" font-size="11">source of truth</text>
+  <rect x="460" y="204" width="180" height="66" rx="10" fill="#fff" stroke="#6c47ff"/><text x="550" y="228" text-anchor="middle" font-weight="700" fill="#1c1633">PostgresSink</text><text x="550" y="246" text-anchor="middle" fill="#4a4366" font-size="11">queue + background thread</text><text x="550" y="262" text-anchor="middle" fill="#4a4366" font-size="11">batched, never blocks</text>
+  <path d="M400 130 C 430 100, 430 60, 456 58" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#a3)"/>
+  <path d="M400 145 H456" stroke="#6c47ff" stroke-width="2" marker-end="url(#a3)"/>
+  <path d="M400 160 C 430 190, 430 236, 456 236" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#a3)"/>
+  <rect x="690" y="180" width="160" height="110" rx="10" fill="#f1ecff" stroke="#b9a6ff"/>
+  <text x="770" y="202" text-anchor="middle" font-weight="700" fill="#1c1633">Postgres tables</text>
+  <text x="770" y="222" text-anchor="middle" fill="#4a4366" font-size="11">runs, events</text>
+  <text x="770" y="240" text-anchor="middle" fill="#4a4366" font-size="11">llm_calls, decisions</text>
+  <text x="770" y="258" text-anchor="middle" fill="#4a4366" font-size="11">artifacts</text>
+  <text x="770" y="278" text-anchor="middle" fill="#5330e6" font-size="11">-&gt; Control Room</text>
+  <path d="M640 237 H686" stroke="#6c47ff" stroke-width="2" marker-end="url(#a3)"/>
+</svg>
+<figcaption>Figure 3. How an event travels. Every event goes to three places at once; the file is always written, the database is a mirror that may never slow down or crash a run.</figcaption>
+</figure>
+
+<h3>The event types</h3>
+<table>
+  <tr><th>Event</th><th>When</th><th>Key fields</th></tr>
+  <tr><td><code>run.start</code>, <code>run.end</code>, <code>run.error</code></td><td>Once per run</td><td>goal, model, status, duration</td></tr>
+  <tr><td><code>node.start</code>, <code>node.end</code>, <code>node.error</code></td><td>Around every graph step</td><td>input and output summary, duration, traceback</td></tr>
+  <tr><td><code>llm.request</code>, <code>llm.response</code>, <code>llm.error</code></td><td>Every model call</td><td>model, latency, input and output tokens, stop reason, payload files</td></tr>
+  <tr><td><code>decision</code></td><td>When ForgeOne chooses something</td><td>what it chose, why, details</td></tr>
+  <tr><td><code>artifact</code></td><td>When a run produces something</td><td>kind (spec, report, verdict), name, full body</td></tr>
+</table>
+
+<h3>The mechanisms worth understanding</h3>
+<ul>
+  <li><strong>Correlation without passing IDs around.</strong> <code>run_id</code>, <code>node</code> and <code>iteration</code> live in Python <code>ContextVar</code>s. <code>start_run()</code> sets the run, <code>@traced_node</code> sets the node, and every event picks them up automatically.</li>
+  <li><strong>Automatic model-call logging.</strong> <code>LLMCallLogger</code> is a LangChain callback handler passed once in the graph config. It sees every model call in every node, so nobody has to remember to log one.</li>
+  <li><strong>Small lines, big payloads.</strong> Full prompts and answers go to <code>payloads/*.json</code> files and to the database, never into the event line itself. Large data travels to Postgres as "blobs" that the file log skips.</li>
+  <li><strong>Redaction.</strong> Strings that look like API keys, tokens or passwords are replaced with <code>[REDACTED]</code> <em>before</em> anything is written. The redaction runs on values, not on finished JSON, after a test showed that redacting JSON text can corrupt it.</li>
+  <li><strong>Errors are logged, then re-raised.</strong> A failing node is recorded with its traceback, but the error still stops the run. Nothing is swallowed.</li>
+  <li><strong>Every event has an <code>event_id</code></strong>, which makes writing it to the database idempotent (see the next chapter).</li>
+</ul>
+
+<!-- ============================================================ 7 -->
+<h2><span class="chap">7</span>The event store</h2>
+<p><code>forgeone/store.py</code> mirrors every event into Postgres so the dashboard can query it. The design rules:</p>
+<ul>
+  <li><strong>Non-blocking:</strong> <code>PostgresSink</code> is a logging handler that puts events on a queue. A background thread writes them in batches of up to 100, every half second.</li>
+  <li><strong>Never fatal:</strong> after three failed writes in a row the sink disables itself and prints one warning. The run continues and the JSONL file still has everything.</li>
+  <li><strong>Idempotent:</strong> every table has a unique <code>event_id</code> and inserts use <code>ON CONFLICT DO NOTHING</code>. Writing the same event twice is harmless, which is what makes <code>backfill</code> safe to repeat.</li>
+  <li><strong>Totals are recomputed, not incremented:</strong> after each batch, a run's call count and token totals are recalculated from <code>llm_calls</code>, so they stay correct even after replays.</li>
+  <li><strong>Built in the caller's thread:</strong> the event dictionary is built in the thread that logged it, because only that thread knows the current run and node.</li>
+</ul>
+<table>
+  <tr><th>Table</th><th>One row per</th><th>Used for</th></tr>
+  <tr><td><code>runs</code></td><td>build run</td><td>status, duration, token totals, goal</td></tr>
+  <tr><td><code>events</code></td><td>event</td><td>timelines, the full event log, errors</td></tr>
+  <tr><td><code>llm_calls</code></td><td>model call</td><td>prompts, answers, tokens, latency, cost</td></tr>
+  <tr><td><code>decisions</code></td><td>decision</td><td>why ForgeOne chose what it chose</td></tr>
+  <tr><td><code>artifacts</code></td><td>produced object</td><td>spec versions and diffs</td></tr>
+</table>
+<pre><code>python -m forgeone.store status     # row counts and latest runs
+python -m forgeone.store backfill   # load runs/*/events.jsonl into Postgres (safe to repeat)
+python -m forgeone.store init       # apply db/schema.sql</code></pre>
+
+<!-- ============================================================ 8 -->
+<h2><span class="chap">8</span>The Control Room</h2>
+<p>The first dashboard was built with Streamlit, which was quick but looked generic and could not do drill-down well. It was replaced by a custom app: a small <strong>Starlette</strong> JSON API (Starlette is the engine FastAPI is built on) and a hand-written single-page interface with no build step.</p>
+<table>
+  <tr><th>Page</th><th>Shows</th></tr>
+  <tr><td>Overview</td><td>weekly numbers with change vs last week, builds and spend per day, goals, recent activity, model usage, step performance</td></tr>
+  <tr><td>Goals, then one goal</td><td>build history strip, spec versions (identical rebuilds folded together), all builds with cost</td></tr>
+  <tr><td>Build</td><td>timeline per step, model calls, decisions, the spec with a coloured diff against the previous version, raw event log</td></tr>
+  <tr><td>Model call (side panel)</td><td>the exact prompt, answer, structured output, tokens and cost</td></tr>
+  <tr><td>Errors</td><td>each failure once, with traceback and a link to its build</td></tr>
+  <tr><td>Project docs</td><td>these documents, readable and as PDF</td></tr>
+</table>
+<p><strong>Goals</strong> are identified by a hash of the goal text, so all builds of the same goal group together. <strong>Cost</strong> is estimated from tokens and the <code>PRICES</code> table in <code>dashboard/server.py</code>; update it when prices change.</p>
+<h3>Security decisions</h3>
+<ul>
+  <li>The app listens on <code>127.0.0.1</code> only; nginx is the public entry point.</li>
+  <li>The dashboard is <strong>public without a login</strong>, by your choice. Anyone with the URL can read goals, prompts and specs. API keys are redacted and the dashboard cannot start anything.</li>
+  <li>Prompts and web pages are untrusted text, so the interface escapes every value before display. A test injected HTML and script into goals, prompts and errors and confirmed nothing executes.</li>
+  <li>Responses carry <code>X-Content-Type-Options: nosniff</code>, <code>X-Frame-Options: DENY</code> and <code>Cache-Control: no-store</code> for API data.</li>
+  <li>Still open: give the dashboard its own <strong>read-only database user</strong>, so even a bug could never change data.</li>
+</ul>
+
+<!-- ============================================================ 9 -->
+<h2 class="new-page"><span class="chap">9</span>Operations on the server</h2>
+<h3>Secrets in <code>.env</code></h3>
+<table>
+  <tr><th>Variable</th><th>Purpose</th></tr>
+  <tr><td><code>ANTHROPIC_API_KEY</code></td><td>Claude API access (from console.anthropic.com, prepaid credits)</td></tr>
+  <tr><td><code>FORGEONE_DB_PASSWORD</code></td><td>Postgres password, read by Docker Compose</td></tr>
+  <tr><td><code>DATABASE_URL</code></td><td><code>postgresql://forgeone:PASSWORD@localhost:5433/forgeone</code></td></tr>
+  <tr><td><code>FORGEONE_MODEL</code> (optional)</td><td>override the builder model</td></tr>
+</table>
+<div class="note warn"><p>Special characters in a password must be URL-encoded inside <code>DATABASE_URL</code>: <code>@</code> becomes <code>%40</code>. Safer: use only letters and digits (<code>openssl rand -hex 16</code>). Postgres sets its password only on the very first start of the container.</p></div>
+
+<h3>Services</h3>
+<pre><code># Dashboard (systemd)
+systemctl restart forgeone-dashboard
+journalctl -u forgeone-dashboard -n 50
+# ExecStart: .venv/bin/uvicorn dashboard.server:app --host 127.0.0.1 --port 8501 --proxy-headers
+
+# Database (Docker, from ~/ForgeOne)
+docker compose up -d
+docker compose ps                 # wait for "healthy"
+# careful: "docker compose down -v" deletes all data
+
+# nginx
+nginx -t &amp;&amp; systemctl reload nginx</code></pre>
+
+<h3>Deploying a change</h3>
+<p>Claude commits to <code>main</code> on GitHub and explains what changed. On the server:</p>
+<pre><code>cd ~/ForgeOne &amp;&amp; git pull &amp;&amp; systemctl restart forgeone-dashboard</code></pre>
+<p>The server reaches GitHub with its own <strong>deploy key</strong> (<code>~/.ssh/forgeone</code>, write access to this one repository only). <code>~/.ssh/config</code> maps the nickname <code>github-forgeone</code> to that key, so the existing key for <code>dateme</code> keeps working unchanged.</p>
+
+<!-- ============================================================ 10 -->
+<h2><span class="chap">10</span>What went wrong, and the lessons</h2>
+<table>
+  <tr><th>Symptom</th><th>Cause</th><th>Lesson</th></tr>
+  <tr><td><code>python: command not found</code></td><td>Ubuntu ships <code>python3</code> only</td><td>Create the venv with <code>python3 -m venv .venv</code>; inside it, <code>python</code> works</td></tr>
+  <tr><td><code>venv/bin/activate</code> not found</td><td>The folder is <code>.venv</code>, hidden from <code>ls</code></td><td>Use <code>ls -a</code></td></tr>
+  <tr><td>Garbled files after pasting</td><td>Long heredoc pastes break in terminals</td><td>Create files in the editor; now Claude pushes them via git</td></tr>
+  <tr><td><code>temperature is not supported</code></td><td>Newest models reject custom temperature</td><td>Leave it at the default</td></tr>
+  <tr><td>Edit "did not apply"</td><td>File not saved, or edited in a different copy</td><td>Check with <code>grep</code>; VS Code must show "SSH" in the corner</td></tr>
+  <tr><td><code>docker compose</code>: no configuration file</td><td>Files created inside <code>forgeone/</code> instead of the project root</td><td>Infrastructure files live in the root</td></tr>
+  <tr><td>Connection closed right after <code>up -d</code></td><td>Postgres restarts once during first-time setup</td><td>Wait for <code>healthy</code></td></tr>
+  <tr><td>Host <code>&gt;@localhost</code> not found</td><td>Placeholder brackets and a raw <code>@</code> in the URL</td><td>URL-encode, or avoid special characters</td></tr>
+  <tr><td><code>no pq wrapper available</code></td><td><code>psycopg</code> installed without its binary part</td><td><code>pip install "psycopg[binary]"</code>, with quotes</td></tr>
+  <tr><td>Black page, clicks do nothing</td><td><code>app.js</code> missing on the server (404)</td><td>Read the browser console first; it named the cause exactly</td></tr>
+  <tr><td>Closed side panel blocked clicks</td><td>CSS <code>display</code> overrode the <code>hidden</code> attribute</td><td>Found by automated screenshot tests before release</td></tr>
+  <tr><td>Push denied for ForgeOne</td><td>Server's key was a deploy key for <code>dateme</code> only</td><td>One deploy key per repository, plus an SSH host alias</td></tr>
+</table>
+<p>The pattern behind most of these: <strong>look at the evidence before guessing</strong>. A traceback, a <code>grep</code>, a status code or the browser console almost always names the cause. The same principle is the heart of the next chapter.</p>
+
+<!-- ============================================================ 11 -->
+<h2><span class="chap">11</span>Costs</h2>
+<table>
+  <tr><th>Model</th><th>Input / output per million tokens</th><th>One ForgeOne build</th></tr>
+  <tr><td>Claude Sonnet 5.5</td><td>$2 / $10</td><td>about 5 to 7 cents</td></tr>
+  <tr><td>Claude Haiku 5.5 (prompt up to 100k tokens)</td><td>$0.10 / $0.50</td><td>about 0.3 cents</td></tr>
+  <tr><td>Claude Haiku 5.5 (prompt over 100k tokens)</td><td>$0.50 / $2.50</td><td></td></tr>
+</table>
+<p>A build is about 4,000 input and 6,000 output tokens, so output dominates the cost. VoyagerOne will be the expensive part: one research task can mean dozens of model calls, each carrying page text. Its cost per task will become one of the metrics in the feedback loop, next to its quality.</p>
+
+<!-- ============================================================ 12 -->
+<h2 class="new-page"><span class="chap">12</span>The feedback loop</h2>
+<p>Anyone can generate an agent; a model writes a plausible system prompt in thirty seconds. What separates a good agent factory from a toy is <strong>how well it can tell a better agent from a worse one</strong>, and why. Every improvement ForgeOne makes is limited by the quality of the signal it learns from. If the evaluation is noisy, the builder optimizes noise. If the evaluation is biased, the builder learns the bias. If the evaluation is good, every build round makes the agent measurably better. This chapter is the plan for making that signal excellent.</p>
+
+<figure>
+<svg viewBox="0 0 860 360" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs><marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker></defs>
+  <circle cx="330" cy="180" r="128" fill="none" stroke="#e4dbff" stroke-width="22"/>
+  <circle cx="330" cy="180" r="74" fill="#1d1340"/>
+  <text x="330" y="172" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">Eval suite</text>
+  <text x="330" y="192" text-anchor="middle" fill="#b9a6ff" font-size="11">+ scoreboard</text>
+  <g font-weight="700" fill="#fff" font-size="12">
+    <rect x="285" y="34" width="90" height="34" rx="17" fill="#6c47ff"/><text x="330" y="56" text-anchor="middle">1 Build</text>
+    <rect x="420" y="86" width="90" height="34" rx="17" fill="#6c47ff"/><text x="465" y="108" text-anchor="middle">2 Run</text>
+    <rect x="430" y="214" width="100" height="34" rx="17" fill="#6c47ff"/><text x="480" y="236" text-anchor="middle">3 Observe</text>
+    <rect x="280" y="292" width="100" height="34" rx="17" fill="#6c47ff"/><text x="330" y="314" text-anchor="middle">4 Evaluate</text>
+    <rect x="130" y="214" width="100" height="34" rx="17" fill="#6c47ff"/><text x="180" y="236" text-anchor="middle">5 Diagnose</text>
+    <rect x="145" y="86" width="90" height="34" rx="17" fill="#6c47ff"/><text x="190" y="108" text-anchor="middle">6 Repair</text>
+  </g>
+  <rect x="610" y="120" width="230" height="120" rx="14" fill="#fff" stroke="#12a06b" stroke-width="1.5"/>
+  <text x="725" y="146" text-anchor="middle" font-weight="700" fill="#1c1633">7 Promotion gate</text>
+  <text x="725" y="170" text-anchor="middle" fill="#4a4366" font-size="11">better on the suite,</text>
+  <text x="725" y="188" text-anchor="middle" fill="#4a4366" font-size="11">no hard check broken,</text>
+  <text x="725" y="206" text-anchor="middle" fill="#4a4366" font-size="11">no category regressed</text>
+  <text x="725" y="226" text-anchor="middle" fill="#12a06b" font-size="11" font-weight="700">-&gt; new champion version</text>
+  <path d="M460 180 H606" stroke="#6c47ff" stroke-width="2" marker-end="url(#a4)"/>
+  <text x="530" y="172" text-anchor="middle" fill="#4a4366" font-size="11">scores</text>
+  <text x="330" y="352" text-anchor="middle" fill="#7d7699" font-size="11">Real-world failures flow back into the eval suite, so it grows with every mistake.</text>
+</svg>
+<figcaption>Figure 4. The feedback loop. The eval suite in the middle is the asset that compounds: every failure found becomes a test that every future version must pass.</figcaption>
+</figure>
+
+<h3>12.1 Principle one: the builder must not grade its own homework</h3>
+<p>Today ForgeOne writes its own test cases. That is useful for quick checks, but dangerous as the main signal: a builder that writes both the agent and its tests will, over time, write tests its agents pass. This is Goodhart's law: when a measure becomes a target, it stops being a good measure.</p>
+<p>So we keep <strong>two kinds of tests</strong>:</p>
+<ul>
+  <li><strong>Builder tests</strong>, written by ForgeOne in each spec: fast, cheap feedback during a build.</li>
+  <li><strong>A fixed eval suite</strong>, written and owned by you, stored in the repository (planned: <code>evals/voyagerone.yaml</code>). The builder never sees the expected answers. Only this suite decides whether a new version is promoted.</li>
+</ul>
+
+<h3>12.2 Principle two: check with code first, judge with models second</h3>
+<p>Many failures can be detected without any model, and those checks are free, exact and impossible to fool. Because every tool call is logged, we can check the report against what the agent actually did:</p>
+<table>
+  <tr><th>Programmatic check</th><th>How</th><th>Catches</th></tr>
+  <tr><td>Every cited URL was opened</td><td>Compare URLs in the report with <code>open_page</code> calls in the trace</td><td>Fabricated sources, the worst failure of a research agent</td></tr>
+  <tr><td>Quotes exist on the page</td><td>Search the stored page text for each quoted sentence</td><td>Invented quotes and numbers</td></tr>
+  <tr><td>Report format</td><td>Required sections present, Sources list not empty</td><td>Format drift</td></tr>
+  <tr><td><code>write_report</code> called exactly once</td><td>Count in the trace</td><td>Process errors</td></tr>
+  <tr><td>Budget</td><td>Steps, tokens, cost and time below limits</td><td>Runaway loops, cost explosions</td></tr>
+  <tr><td>Trap tasks answered honestly</td><td>Nonexistent entity: report must say "not found"</td><td>Hallucination under pressure</td></tr>
+</table>
+<p>Only what code cannot judge goes to a model: is the answer correct, complete and well reasoned?</p>
+
+<h3>12.3 Principle three: make the model judge trustworthy</h3>
+<ul>
+  <li><strong>A rubric, not a feeling.</strong> Score fixed criteria on an anchored scale: what a 1, a 3 and a 5 look like for faithfulness, completeness and reasoning.</li>
+  <li><strong>Evidence required.</strong> The judge must quote the transcript or report for every score it gives. A score without evidence is discarded.</li>
+  <li><strong>Pairwise beats absolute.</strong> "Is report A or B better for this task?" is far more reliable than "rate this report from 1 to 10". Compare a challenger version with the current champion on the same task.</li>
+  <li><strong>Swap positions.</strong> Ask twice with A and B swapped; models prefer whichever comes first. Count only consistent verdicts.</li>
+  <li><strong>Judge with a different, stronger model</strong> than the agent. VoyagerOne runs on Haiku; the judge can run on Sonnet, because judging is rare and cheap compared with running.</li>
+  <li><strong>Calibrate against you.</strong> Grade 20 to 30 results yourself, then measure how often the judge agrees. Below about 80% agreement, fix the rubric before trusting the judge with any decision.</li>
+</ul>
+<pre><code># planned judge output, one per task and version
+verdict:
+  faithfulness: 4      # every claim supported by an opened source?
+  completeness: 3      # all sub-questions answered?
+  reasoning: 4         # conflicts handled, uncertainty stated?
+  evidence:
+    - "Report claims 10% limit; source WHO page states 'less than 10%'"
+  failure_tags: [coverage.missed_subquestion]
+  confidence: medium</code></pre>
+
+<h3>12.4 Principle four: a balanced scorecard, with hard gates</h3>
+<table>
+  <tr><th>Dimension</th><th>Metric</th><th>Gate or score</th></tr>
+  <tr><td>Honesty</td><td>Fabricated sources or quotes (programmatic)</td><td><strong>Hard gate: must be zero</strong></td></tr>
+  <tr><td>Correctness</td><td>Judge faithfulness and accuracy against reference notes</td><td>Score</td></tr>
+  <tr><td>Coverage</td><td>Share of sub-questions answered</td><td>Score</td></tr>
+  <tr><td>Calibration</td><td>Are "Confirmed" facts actually right more often than "Single-source" ones?</td><td>Score</td></tr>
+  <tr><td>Robustness</td><td>Same task 3 times: does it pass every time?</td><td>Score (pass^3)</td></tr>
+  <tr><td>Efficiency</td><td>Tool calls, tokens, cost and time per task</td><td>Score, with hard budget limits</td></tr>
+  <tr><td>Safety</td><td>Followed instructions hidden in a web page?</td><td><strong>Hard gate</strong></td></tr>
+</table>
+<p>Hard gates are never averaged away. A version that is 10% better on average but fabricated one source is rejected. Averages hide exactly the failures that destroy trust.</p>
+
+<h3>12.5 Principle five: be statistically honest</h3>
+<p>Agent runs are noisy: the same agent on the same task can pass once and fail the next time. One improved run proves nothing. So:</p>
+<ul>
+  <li>Run every eval task <strong>at least 3 times</strong> per version and report the pass rate, not one result.</li>
+  <li>Compare versions <strong>on the same tasks</strong>, run at the same time, so a website change does not look like an agent change.</li>
+  <li>Accept an improvement only when the gap is larger than the run-to-run noise you have measured.</li>
+  <li><strong>Regression gate:</strong> a new version may not drop in any category (for example "trap tasks" or "comparisons") beyond a set threshold, even if the total improves.</li>
+</ul>
+
+<h3>12.6 Principle six: diagnose by trace, fix one thing at a time</h3>
+<p>A score says <em>that</em> something failed. The trace says <em>why</em>. This is where Day 1's observability pays off: every search, page, decision and model call is recorded. Each failure gets one root-cause tag from a fixed taxonomy:</p>
+<table>
+  <tr><th>Tag</th><th>Meaning</th><th>Typical repair</th></tr>
+  <tr><td><code>search.bad_query</code></td><td>Searches never found the right pages</td><td>Prompt: query strategy; more varied queries</td></tr>
+  <tr><td><code>read.shallow</code></td><td>Right page opened but the key passage missed</td><td>Use <code>find_on_page</code>; larger page text limit</td></tr>
+  <tr><td><code>synthesis.unsupported</code></td><td>Claim not backed by any source read</td><td>Stricter claim ledger rule; programmatic check</td></tr>
+  <tr><td><code>coverage.missed_subquestion</code></td><td>Part of the question ignored</td><td>Explicit decomposition and a checklist before writing</td></tr>
+  <tr><td><code>stop.too_early</code> / <code>stop.too_late</code></td><td>Stopping rule wrong</td><td>Adjust stopping rule or step budget</td></tr>
+  <tr><td><code>tool.failure</code></td><td>Page blocked, timeout, interactive site</td><td>Better tool, or the Browser Use fallback</td></tr>
+  <tr><td><code>injection.followed</code></td><td>Obeyed text inside a web page</td><td>Prompt rule plus a safety test; treat as critical</td></tr>
+</table>
+<p>Aggregating tags across the suite tells you where to invest: if 40% of failures are <code>read.shallow</code>, improving the search prompt is wasted effort. Repairs are tried in order of cost and risk: prompt first, then tool choice and budget, then model, and only last new tools (which need a sandbox). Change <strong>one thing per version</strong>, so the scoreboard can tell you which change helped.</p>
+
+<h3>12.7 How to read and evaluate results: a routine</h3>
+<ol>
+  <li><strong>Gates first.</strong> Any fabricated source, injection or budget breach? If yes, stop: that version is rejected, whatever else it scores.</li>
+  <li><strong>Compare with the champion</strong> on the same tasks: per category, not just the total.</li>
+  <li><strong>Check the noise.</strong> Is the difference bigger than the variation between repeated runs?</li>
+  <li><strong>Read the worst five traces</strong> in full in the Control Room: the prompt, every tool call, the report. Numbers tell you where; traces tell you why.</li>
+  <li><strong>Tag the root cause</strong> of each failure and look at the distribution of tags.</li>
+  <li><strong>Write down one hypothesis</strong>: "the agent stops before checking a second source because the stopping rule only counts sub-questions".</li>
+  <li><strong>Make one change</strong>, run the full suite with repeats, and let the gate decide.</li>
+  <li><strong>Turn new failures into eval tasks</strong>, so they can never silently return.</li>
+</ol>
+
+<h3>12.8 Where the edge comes from</h3>
+<ul>
+  <li><strong>The eval suite is the moat.</strong> Prompts can be copied; a suite of hundreds of hard, realistic tasks built from real failures cannot. It grows every time something goes wrong.</li>
+  <li><strong>Trap tasks reveal character.</strong> Nonexistent studies, conflicting sources, outdated pages, paywalls and pages with hidden instructions show what an agent does under pressure. Most agents are never tested on them.</li>
+  <li><strong>Optimise the frontier, not one number.</strong> Track quality against cost per task. A Haiku agent at 95% of Sonnet's quality for 5% of the cost is often the winning product.</li>
+  <li><strong>Close the loop with reality.</strong> Once VoyagerOne is used for real questions, add a simple rating per report. Every bad rating becomes a candidate eval task.</li>
+  <li><strong>Evaluate the builder too.</strong> The final question is not "is VoyagerOne good?" but "does ForgeOne reliably produce good agents?" Measure how many build rounds it needs to pass the suite, and how often its repairs actually help.</li>
+</ul>
+
+<h3>12.9 What we will build for this</h3>
+<table>
+  <tr><th>Piece</th><th>What</th></tr>
+  <tr><td><code>evals/voyagerone.yaml</code></td><td>Your fixed suite: task, category, reference notes, hard checks</td></tr>
+  <tr><td><code>test</code> node</td><td>Runs the agent on each task, 3 times, records full traces</td></tr>
+  <tr><td>Programmatic checks</td><td>Cited-but-not-opened URLs, quote verification, format, budgets</td></tr>
+  <tr><td><code>judge</code> node</td><td>Rubric with evidence, pairwise against the champion, different model</td></tr>
+  <tr><td>Tables <code>eval_runs</code>, <code>eval_results</code></td><td>Score per task, version, repeat and dimension, plus failure tags</td></tr>
+  <tr><td>Quality page in the Control Room</td><td>Scoreboard per version, category breakdown, failure-tag chart, champion vs challenger</td></tr>
+  <tr><td>Promotion gate</td><td>Hard gates and no regression before a version becomes the champion</td></tr>
+</table>
+
+<!-- ============================================================ 13 -->
+<h2><span class="chap">13</span>Plan for Day 2</h2>
+<ol>
+  <li><strong>VoyagerOne's tools</strong> with Playwright: <code>web_search</code>, <code>open_page</code>, <code>click</code>, <code>find_on_page</code>, <code>write_report</code>, on a dedicated browser thread.</li>
+  <li><strong>The runtime</strong>: a second LangGraph graph (agent, tools, agent, ...) that loads a spec and runs it, logged with the same observability.</li>
+  <li><strong>The first real research run</strong>, visible in the Control Room.</li>
+  <li><strong>The first version of the eval suite</strong>: 10 tasks across categories, including trap tasks.</li>
+  <li><strong>The test and judge nodes</strong>, closing the loop in Figure 2.</li>
+</ol>
+
+<!-- ============================================================ 14 -->
+<h2><span class="chap">14</span>Glossary</h2>
+<table>
+  <tr><td><strong>Agent</strong></td><td>A model in a loop that can call tools until a task is done.</td></tr>
+  <tr><td><strong>AgentSpec</strong></td><td>The structured description of an agent that ForgeOne writes.</td></tr>
+  <tr><td><strong>Artifact</strong></td><td>Something a run produced: a spec, a report, a verdict.</td></tr>
+  <tr><td><strong>Champion / challenger</strong></td><td>The current best version, and a new version trying to replace it.</td></tr>
+  <tr><td><strong>Checkpoint</strong></td><td>A saved state of a graph run that allows resuming after a crash.</td></tr>
+  <tr><td><strong>Deploy key</strong></td><td>An SSH key with access to exactly one GitHub repository.</td></tr>
+  <tr><td><strong>Eval suite</strong></td><td>A fixed set of tasks with checks, used to compare agent versions.</td></tr>
+  <tr><td><strong>Hard gate</strong></td><td>A check that must pass; never averaged with other scores.</td></tr>
+  <tr><td><strong>Idempotent</strong></td><td>Doing it twice has the same effect as doing it once.</td></tr>
+  <tr><td><strong>JSONL</strong></td><td>A text file with one JSON object per line.</td></tr>
+  <tr><td><strong>Node / edge / state</strong></td><td>A step, the connection between steps, and the shared data in a LangGraph graph.</td></tr>
+  <tr><td><strong>pass^k</strong></td><td>The share of tasks an agent passes in all k repeated attempts.</td></tr>
+  <tr><td><strong>Reverse proxy</strong></td><td>nginx in front of an app: receives public traffic, handles HTTPS, forwards it.</td></tr>
+  <tr><td><strong>Structured output</strong></td><td>Forcing a model's answer to match a schema.</td></tr>
+  <tr><td><strong>Trace</strong></td><td>The complete record of one run: every step, call and decision.</td></tr>
+</table>
+
+</article>
+</body>
+</html>

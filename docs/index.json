@@ -1,0 +1,10 @@
+[
+  {
+    "slug": "day-01",
+    "title": "Day 1: Foundations",
+    "date": "2026-11-21",
+    "summary": "Everything built on day one: the builder graph, the AgentSpec contract, observability, the Postgres event store, the Control Room and the server setup. Plus the plan for the feedback loop: how to evaluate agents so they keep getting better.",
+    "html": "/docs/day-01.html",
+    "pdf": "/docs/day-01.pdf"
+  }
+]

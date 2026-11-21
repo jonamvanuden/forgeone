@@ -24,6 +24,7 @@ from . import db
 
 load_dotenv()
 STATIC = Path(__file__).parent / "static"
+DOCS = Path(__file__).resolve().parent.parent / "docs"   # project documents (HTML + PDF)
 
 # USD per million tokens: (input, output). Keep in sync with the Claude pricing page.
 # Haiku 5.5 is billed at a higher rate when a single prompt exceeds 100k input tokens.
@@ -303,6 +304,7 @@ routes = [
     Route("/api/calls/{call_id:int}", api_call),
     Route("/api/errors", api_errors),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
+    Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
     Route("/", index),
 ]
 

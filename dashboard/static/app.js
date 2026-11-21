@@ -495,6 +495,71 @@ async function viewErrors() {
   return true;
 }
 
+/* ---------------- project docs ---------------- */
+const DOWNLOAD = '<svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>';
+const docCache = new Map();
+async function loadDoc(meta) {
+  // Our own committed documents (trusted content), parsed and cached.
+  if (!docCache.has(meta.slug)) {
+    const res = await fetch(meta.html);
+    if (!res.ok) throw new Error(`Document not found (${res.status})`);
+    const page = new DOMParser().parseFromString(await res.text(), "text/html");
+    const article = page.querySelector("#doc");
+    if (!article) throw new Error("Document has no #doc article");
+    docCache.set(meta.slug, article);
+  }
+  return docCache.get(meta.slug);
+}
+const dayBadge = (m, i) => {
+  const num = (m.slug.match(/(\d+)$/) || [, i + 1])[1].replace(/^0+/, "");
+  return `<span class="day" aria-hidden="true">DAY<b>${esc(num)}</b></span>`;
+};
+
+async function viewDocs() {
+  const docs = await api("/docs/index.json");
+  const data = JSON.stringify(docs);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Project docs" }]);
+  const list = docs
+    .map((m, i) => `<li class="doc-item">${dayBadge(m, i)}
+      <div><h3><a href="#/docs/${esc(m.slug)}">${esc(m.title)}</a></h3><p>${esc(m.summary)}</p>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">${esc(fmtDay(m.date))}</div></div>
+      <div class="doc-actions"><a class="btn primary" href="#/docs/${esc(m.slug)}">Read</a>
+        <a class="btn" href="${esc(m.pdf)}" download>${DOWNLOAD}PDF</a></div></li>`)
+    .join("");
+  let figures = "";
+  if (docs.length) {
+    try {
+      const art = await loadDoc(docs[docs.length - 1]);
+      figures = [...art.querySelectorAll("figure")].map((f) => `<div class="doc">${f.outerHTML}</div>`).join("");
+    } catch { figures = ""; }
+  }
+  main.innerHTML = `
+    <div class="page-head"><div><h1>Project docs</h1><p>How ForgeOne is built and why: one document per working day, readable here and as PDF.</p></div></div>
+    ${panel("Documents", `${docs.length} ${docs.length === 1 ? "document" : "documents"}`, `<ul class="doc-list">${list}</ul>`)}
+    ${figures ? `<div class="page-head" style="margin:36px 0 16px"><div><h1 style="font-size:20px">Architecture at a glance</h1><p>The diagrams from the latest document.</p></div></div><div class="fig-grid">${figures}</div>` : ""}`;
+  return true;
+}
+
+async function viewDoc(slug) {
+  const docs = await api("/docs/index.json");
+  const meta = docs.find((d) => d.slug === slug);
+  if (!meta) throw new Error("Document not found");
+  if (state.lastJSON === `doc:${slug}`) return false;
+  state.lastJSON = `doc:${slug}`;
+  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Project docs", href: "#/docs" }, { label: meta.title }]);
+  const art = await loadDoc(meta);
+  main.innerHTML = `
+    <div class="reader-bar">
+      <a class="btn" href="#/docs">All documents</a>
+      <div class="doc-actions"><a class="btn" href="${esc(meta.html)}" target="_blank" rel="noopener">Open full page</a>
+        <a class="btn primary" href="${esc(meta.pdf)}" download>${DOWNLOAD}Download PDF</a></div>
+    </div>
+    <section class="panel reader"><article class="doc">${art.innerHTML}</article></section>`;
+  return true;
+}
+
 /* ---------------- sheet: one model call ---------------- */
 let lastFocus = null;
 async function openCall(callId) {
@@ -546,6 +611,8 @@ function parse() {
   if (parts[0] === "goal" && parts[1]) return { name: "goal", id: parts[1], nav: "goals" };
   if (parts[0] === "run" && parts[1]) return { name: "run", id: parts[1], call: parts[2] === "call" ? parts[3] : null, nav: "goals" };
   if (parts[0] === "goals") return { name: "goals", nav: "goals" };
+  if (parts[0] === "docs" && parts[1]) return { name: "doc", id: parts[1], nav: "docs" };
+  if (parts[0] === "docs") return { name: "docs", nav: "docs" };
   if (parts[0] === "errors") return { name: "errors", nav: "errors" };
   return { name: "home", nav: "home" };
 }
@@ -559,6 +626,8 @@ async function render({ quiet = false } = {}) {
     if (route.name === "goal") await viewGoal(route.id);
     else if (route.name === "run") await viewRun(route.id, route.call);
     else if (route.name === "goals") await viewGoals();
+    else if (route.name === "docs") await viewDocs();
+    else if (route.name === "doc") await viewDoc(route.id);
     else if (route.name === "errors") await viewErrors();
     else await viewHome();
     if (!sameView && !quiet) { window.scrollTo(0, 0); main.focus({ preventScroll: true }); }
@@ -618,7 +687,7 @@ window.addEventListener("hashchange", () => { tip.hidden = true; render(); });
 render();
 refreshBadge();
 setInterval(() => {
-  if (document.hidden || !$("#sheet").hidden) return;
+  if (document.hidden || !$("#sheet").hidden || state.route?.nav === "docs") return;
   render({ quiet: true });
   refreshBadge();
 }, REFRESH_MS);
