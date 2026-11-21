@@ -1,0 +1,7 @@
+# Agents ForgeOne manages. Each agent lives in its OWN git repository; ForgeOne reads its
+# goal.md and evals/, and publishes builds into its agent/ folder on a branch.
+agents:
+  voyagerone:
+    path: ../VoyagerOne                                        # checkout next to ForgeOne
+    remote: git@github-voyagerone:jonamvanuden/VoyagerOne.git  # SSH alias with a deploy key
+    branch: main

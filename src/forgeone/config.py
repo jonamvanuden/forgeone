@@ -33,11 +33,8 @@ class Settings:
     builder_model: str = "claude-haiku-5-5"
     database_url: str | None = None
     runs_dir: Path = field(default=Path("runs"))
-    agents_dir: Path = field(default=Path("agents"))
     docs_dir: Path = field(default=Path("docs"))
-
-    def agent_dir(self, agent: str) -> Path:
-        return self.agents_dir / agent
+    control_room_url: str | None = None   # used for links in agent repos (BUILD.md)
 
 
 @lru_cache(maxsize=1)
@@ -54,6 +51,6 @@ def settings() -> Settings:
         builder_model=os.getenv("FORGEONE_MODEL", "claude-haiku-5-5"),
         database_url=os.getenv("DATABASE_URL"),
         runs_dir=rel("FORGEONE_RUNS_DIR", "runs"),
-        agents_dir=rel("FORGEONE_AGENTS_DIR", "agents"),
         docs_dir=rel("FORGEONE_DOCS_DIR", "docs"),
+        control_room_url=os.getenv("FORGEONE_CONTROL_ROOM_URL", "https://cashgrab.online").rstrip("/") or None,
     )

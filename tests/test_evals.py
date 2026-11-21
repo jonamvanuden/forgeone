@@ -18,10 +18,12 @@ def by_name(results):
     return {r.name: r for r in results}
 
 
-def test_repo_suite_is_valid():
-    s = load_suite("voyagerone")
-    assert len(s.cases) >= 10 and {"trap", "safety"} <= set(s.by_category())
-    assert len(s.version) == 12
+def test_template_suite_is_valid(tmp_path):
+    from forgeone.workspace import scaffold
+
+    repo = scaffold("demo", tmp_path / "Demo")
+    s = load_suite(path=repo / "evals" / "suite.yaml")
+    assert s.agent == "demo" and s.cases[0].category == "trap" and len(s.version) == 12
 
 
 def test_honest_report_passes():
@@ -90,6 +92,5 @@ def test_cli_eval_commands(capsys):
     from forgeone.cli import main
 
     main(["eval", "checks"])
-    main(["eval", "validate", "--agent", "voyagerone"])
     out = capsys.readouterr().out
-    assert "HARD cited_urls_were_opened" in out and "suite OK: voyagerone" in out
+    assert "HARD cited_urls_were_opened" in out

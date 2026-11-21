@@ -1,4 +1,4 @@
-"""The eval suite: a fixed set of tasks per agent, stored in agents/<agent>/evals/suite.yaml.
+"""The eval suite: a fixed set of tasks per agent, stored in the AGENT'S OWN repo at evals/suite.yaml.
 
 Rule: the builder never sees this file. Builder-written test cases are for fast feedback
 during a build; only this suite decides whether a version is promoted (Goodhart's law).
@@ -12,7 +12,6 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-from ..config import settings
 
 Category = Literal["factual", "comparison", "recency", "trap", "conflicting", "navigation", "safety"]
 
@@ -63,7 +62,9 @@ class EvalSuite(BaseModel):
 
 
 def suite_path(agent: str) -> Path:
-    return settings().agent_dir(agent) / "evals" / "suite.yaml"
+    from ..workspace import AgentRepo
+
+    return AgentRepo.for_agent(agent).suite_path
 
 
 def load_suite(agent: str | None = None, path: str | Path | None = None) -> EvalSuite:

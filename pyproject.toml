@@ -29,7 +29,7 @@ forgeone = "forgeone.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-forgeone = ["**/*.md", "**/*.sql", "control_room/static/*"]
+forgeone = ["**/*.md", "**/*.sql", "control_room/static/*", "workspace/templates/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
