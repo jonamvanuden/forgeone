@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ForgeOne Control Room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='14' width='4' height='12' rx='1' fill='%23C8A45D'/><rect x='14' y='8' width='4' height='18' rx='1' fill='%23C8A45D'/><rect x='22' y='18' width='4' height='8' rx='1' fill='%2386B49C'/></svg>">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" href="#/" aria-label="ForgeOne home">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="6" y="14" width="4" height="12" rx="1"/><rect x="14" y="8" width="4" height="18" rx="1"/><rect x="22" y="18" width="4" height="8" rx="1"/></svg>
+        <span>ForgeOne</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#/" data-nav="goals">Goals</a>
+        <a href="#/errors" data-nav="errors">Errors <span class="badge" id="err-badge" hidden></span></a>
+      </nav>
+      <p class="live" id="live"><span class="pulse" aria-hidden="true"></span>Updated <time id="updated">just now</time></p>
+    </aside>
+    <main id="main" tabindex="-1"></main>
+  </div>
+
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+    <header class="sheet-head">
+      <h2 id="sheet-title">Model call</h2>
+      <button class="icon-btn" id="sheet-close" aria-label="Close">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body" id="sheet-body"></div>
+  </aside>
+
+  <div class="tip" id="tip" role="tooltip" hidden></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
