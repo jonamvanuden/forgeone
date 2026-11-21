@@ -123,3 +123,92 @@ def query(sql: str, params: dict | None = None) -> list[dict]:
 def one(sql: str, params: dict | None = None) -> dict | None:
     rows = query(sql, params)
     return rows[0] if rows else None
+
+
+# ------------------------------------------------------------------ overview v2
+WEEK_KPIS = """
+SELECT
+  count(*) FILTER (WHERE started_at > now() - interval '7 days')                         AS builds_7d,
+  count(*) FILTER (WHERE started_at <= now() - interval '7 days'
+                     AND started_at > now() - interval '14 days')                        AS builds_prev,
+  count(*) FILTER (WHERE status = 'ok' AND started_at > now() - interval '7 days')       AS passed_7d,
+  count(*) FILTER (WHERE status IN ('ok','error') AND started_at > now() - interval '7 days') AS finished_7d,
+  count(*) FILTER (WHERE status = 'ok' AND started_at <= now() - interval '7 days'
+                     AND started_at > now() - interval '14 days')                        AS passed_prev,
+  count(*) FILTER (WHERE status IN ('ok','error') AND started_at <= now() - interval '7 days'
+                     AND started_at > now() - interval '14 days')                        AS finished_prev,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)
+      FILTER (WHERE status = 'ok' AND started_at > now() - interval '7 days')            AS median_ms_7d,
+  percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)
+      FILTER (WHERE status = 'ok' AND started_at <= now() - interval '7 days'
+                AND started_at > now() - interval '14 days')                             AS median_ms_prev,
+  count(*) FILTER (WHERE status = 'running')                                             AS running,
+  max(started_at)                                                                        AS last_build
+FROM runs
+"""
+
+# tokens grouped so cost can be priced per model (Haiku is priced higher above 100k input)
+USAGE_BY_DAY = """
+SELECT date_trunc('day', ts)::date AS day, model, (input_tokens > 100000) AS long_prompt,
+       count(*) AS calls, coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout
+FROM llm_calls
+WHERE ts > now() - interval '14 days'
+GROUP BY 1, 2, 3
+"""
+
+USAGE_BY_MODEL = """
+SELECT model, (input_tokens > 100000) AS long_prompt, count(*) AS calls,
+       count(*) FILTER (WHERE status = 'error') AS errors,
+       coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout,
+       round(avg(latency_ms)) AS avg_latency_ms
+FROM llm_calls
+WHERE ts > now() - interval '30 days'
+GROUP BY 1, 2
+"""
+
+BUILDS_BY_DAY = """
+SELECT d::date AS day,
+       count(r.run_id) FILTER (WHERE r.status = 'ok')      AS passed,
+       count(r.run_id) FILTER (WHERE r.status = 'error')   AS failed,
+       count(r.run_id) FILTER (WHERE r.status = 'running') AS running
+FROM generate_series(date_trunc('day', now()) - interval '13 days', date_trunc('day', now()), interval '1 day') d
+LEFT JOIN runs r ON date_trunc('day', r.started_at) = d
+GROUP BY d ORDER BY d
+"""
+
+STEP_STATS = """
+SELECT node,
+       count(*)                                                    AS runs,
+       round(avg((fields->>'duration_ms')::numeric))               AS avg_ms,
+       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY (fields->>'duration_ms')::numeric)) AS p95_ms,
+       count(*) FILTER (WHERE event = 'node.error')                AS failed
+FROM events
+WHERE event IN ('node.end', 'node.error') AND ts > now() - interval '30 days' AND node IS NOT NULL
+GROUP BY node ORDER BY avg_ms DESC NULLS LAST
+"""
+
+RECENT_RUNS = f"""
+SELECT r.run_id, r.status, r.started_at, r.ended_at, r.duration_ms, r.error, r.goal, r.name,
+       {GOAL_KEY} AS goal_key
+FROM runs r ORDER BY r.started_at DESC LIMIT 12
+"""
+
+RECENT_SPECS = """
+SELECT a.id, a.run_id, a.ts, a.name, a.body FROM artifacts a
+WHERE a.kind = 'spec' AND a.ts > now() - interval '30 days'
+ORDER BY a.name, a.ts
+"""
+
+COST_BY_RUN = """
+SELECT run_id, model, (input_tokens > 100000) AS long_prompt,
+       coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout
+FROM llm_calls WHERE run_id = ANY(%(run_ids)s)
+GROUP BY 1, 2, 3
+"""
+
+COST_BY_GOAL = f"""
+SELECT {GOAL_KEY} AS key, c.model, (c.input_tokens > 100000) AS long_prompt,
+       coalesce(sum(c.input_tokens), 0) AS tin, coalesce(sum(c.output_tokens), 0) AS tout
+FROM llm_calls c JOIN runs r USING (run_id)
+GROUP BY 1, 2, 3
+"""

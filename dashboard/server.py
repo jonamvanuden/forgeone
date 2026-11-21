@@ -25,6 +25,40 @@ from . import db
 load_dotenv()
 STATIC = Path(__file__).parent / "static"
 
+# USD per million tokens: (input, output). Keep in sync with the Claude pricing page.
+# Haiku 5.5 is billed at a higher rate when a single prompt exceeds 100k input tokens.
+PRICES = {
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-haiku-5-5:long": (0.50, 2.50),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-opus-5-5": (4.00, 20.00),
+}
+
+
+def price(model: str | None, long_prompt: bool, tin, tout) -> float | None:
+    """Estimated USD cost for a group of calls; None if the model's price is unknown."""
+    if not model:
+        return None
+    key = f"{model}:long" if long_prompt and f"{model}:long" in PRICES else model
+    if key not in PRICES:
+        return None
+    pin, pout = PRICES[key]
+    return (float(tin or 0) * pin + float(tout or 0) * pout) / 1_000_000
+
+
+def sum_costs(rows, key_field: str | None = None) -> dict:
+    """Aggregate priced rows into {key: {"cost": float, "unpriced": bool}}."""
+    out: dict = {}
+    for r in rows:
+        k = r[key_field] if key_field else None
+        c = price(r["model"], r["long_prompt"], r["tin"], r["tout"])
+        slot = out.setdefault(k, {"cost": 0.0, "unpriced": False})
+        if c is None:
+            slot["unpriced"] = True
+        else:
+            slot["cost"] += c
+    return out
+
 
 def _default(o):
     if isinstance(o, (dt.datetime, dt.date)):
@@ -77,22 +111,31 @@ def api_overview(request: Request):
     return JSON(db.one(db.OVERVIEW))
 
 
-def api_goals(request: Request):
+def _goals_with_cost() -> list[dict]:
     goals = db.query(db.GOALS)
+    costs = sum_costs(db.query(db.COST_BY_GOAL), "key")
     for g in goals:
         g["title"] = goal_title(g["goal"], g["name"])
         g["strip"] = g["strip"] or []
-    return JSON(goals)
+        g["cost"] = costs.get(g["key"], {}).get("cost", 0.0)
+    return goals
+
+
+def api_goals(request: Request):
+    return JSON(_goals_with_cost())
 
 
 def api_goal(request: Request):
     key = request.path_params["key"]
-    goals = [g for g in db.query(db.GOALS) if g["key"] == key]
+    goals = [g for g in _goals_with_cost() if g["key"] == key]
     if not goals:
         raise HTTPException(404, "Goal not found")
     g = goals[0]
     g["title"] = goal_title(g["goal"], g["name"])
     g["runs"] = db.query(db.GOAL_RUNS, {"key": key})
+    run_costs = sum_costs(db.query(db.COST_BY_RUN, {"run_ids": [r["run_id"] for r in g["runs"]]}), "run_id")
+    for r in g["runs"]:
+        r["cost"] = run_costs.get(r["run_id"], {}).get("cost", 0.0)
     # a "version" = a distinct spec; consecutive identical specs are the same version
     specs, prev = [], None
     for row in db.query(db.GOAL_SPECS, {"key": key}):
@@ -119,6 +162,9 @@ def api_run(request: Request):
     run["title"] = goal_title(run["goal"], run["name"])
     run["nodes"] = db.query(db.RUN_NODES, {"run_id": run_id})
     run["calls"] = db.query(db.RUN_CALLS, {"run_id": run_id})
+    for c in run["calls"]:
+        c["cost"] = price(c["model"], (c["input_tokens"] or 0) > 100_000, c["input_tokens"], c["output_tokens"])
+    run["cost"] = sum(c["cost"] or 0 for c in run["calls"])
     run["decisions"] = db.query(db.RUN_DECISIONS, {"run_id": run_id})
     arts = []
     for a in db.query(db.RUN_ARTIFACTS, {"run_id": run_id}):
@@ -137,10 +183,87 @@ def api_run(request: Request):
     return JSON(run)
 
 
+def _delta(now, prev):
+    """Relative change in percent, or None when there is no baseline."""
+    now, prev = float(now or 0), float(prev or 0)
+    return None if prev == 0 else round((now - prev) / prev * 100)
+
+
+def api_home(request: Request):
+    k = db.one(db.WEEK_KPIS)
+    days = {d["day"].isoformat() if hasattr(d["day"], "isoformat") else str(d["day"]): d
+            for d in db.query(db.BUILDS_BY_DAY)}
+    for d in days.values():
+        d["cost"] = 0.0
+    spend_7d = spend_prev = 0.0
+    today = dt.date.today()
+    for u in db.query(db.USAGE_BY_DAY):
+        c = price(u["model"], u["long_prompt"], u["tin"], u["tout"]) or 0.0
+        day = u["day"] if isinstance(u["day"], dt.date) else dt.date.fromisoformat(str(u["day"])[:10])
+        if day.isoformat() in days:
+            days[day.isoformat()]["cost"] += c
+        age = (today - day).days
+        if age < 7:
+            spend_7d += c
+        elif age < 14:
+            spend_prev += c
+
+    models: dict = {}
+    for u in db.query(db.USAGE_BY_MODEL):
+        m = models.setdefault(u["model"] or "unknown", {"model": u["model"] or "unknown", "calls": 0, "errors": 0,
+                                                        "tokens_in": 0, "tokens_out": 0, "cost": 0.0,
+                                                        "priced": True, "avg_latency_ms": u["avg_latency_ms"]})
+        m["calls"] += u["calls"]; m["errors"] += u["errors"]
+        m["tokens_in"] += u["tin"]; m["tokens_out"] += u["tout"]
+        c = price(u["model"], u["long_prompt"], u["tin"], u["tout"])
+        if c is None:
+            m["priced"] = False
+        else:
+            m["cost"] += c
+
+    # activity feed: recent builds + spec versions that changed something
+    feed = []
+    for r in db.query(db.RECENT_RUNS):
+        title = goal_title(r["goal"], r["name"])
+        feed.append({"kind": "build." + (r["status"] or "unknown"), "ts": r["ended_at"] or r["started_at"],
+                     "run_id": r["run_id"], "goal_key": r["goal_key"], "title": title,
+                     "duration_ms": r["duration_ms"], "error": r["error"]})
+    prev_by_name: dict = {}
+    for a in db.query(db.RECENT_SPECS):
+        prev = prev_by_name.get(a["name"])
+        if prev is not None and prev != a["body"]:
+            feed.append({"kind": "spec.changed", "ts": a["ts"], "run_id": a["run_id"], "name": a["name"],
+                         "changed": spec_changes(prev, a["body"])})
+        prev_by_name[a["name"]] = a["body"]
+    feed.sort(key=lambda f: str(f["ts"]), reverse=True)
+
+    finished_7d, finished_prev = k["finished_7d"] or 0, k["finished_prev"] or 0
+    rate = (k["passed_7d"] / finished_7d * 100) if finished_7d else None
+    rate_prev = (k["passed_prev"] / finished_prev * 100) if finished_prev else None
+    goals = _goals_with_cost()
+    return JSON({
+        "kpis": {
+            "builds_7d": k["builds_7d"], "builds_delta": _delta(k["builds_7d"], k["builds_prev"]),
+            "success_rate": rate, "success_delta": None if rate is None or rate_prev is None else round(rate - rate_prev),
+            "spend_7d": spend_7d, "spend_delta": _delta(spend_7d, spend_prev),
+            "median_ms": k["median_ms_7d"], "median_delta": _delta(k["median_ms_7d"], k["median_ms_prev"]),
+            "running": k["running"], "last_build": k["last_build"],
+        },
+        "days": list(days.values()),
+        "models": sorted(models.values(), key=lambda m: m["cost"], reverse=True),
+        "steps": db.query(db.STEP_STATS),
+        "feed": feed[:14],
+        "goals": goals,
+        "prices": {m: {"input": p[0], "output": p[1]} for m, p in PRICES.items()},
+    })
+
+
 def api_call(request: Request):
     call = db.one(db.CALL, {"id": int(request.path_params["call_id"])})
     if not call:
         raise HTTPException(404, "Call not found")
+    call["cost"] = price(call["model"], (call["input_tokens"] or 0) > 100_000,
+                         call["input_tokens"], call["output_tokens"])
     return JSON(call)
 
 
@@ -173,6 +296,7 @@ async def on_error(request: Request, exc: Exception):
 
 routes = [
     Route("/api/overview", api_overview),
+    Route("/api/home", api_home),
     Route("/api/goals", api_goals),
     Route("/api/goals/{key}", api_goal),
     Route("/api/runs/{run_id}", api_run),
