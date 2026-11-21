@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forgeone"
+version = "0.2.0"
+description = "ForgeOne: an agent that builds, evaluates and improves agents"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=1.0",
+  "langchain-core>=1.0",
+  "langchain-anthropic>=1.0",
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  "psycopg[binary]>=3.2",
+  "starlette>=0.40",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+forgeone = "forgeone.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+forgeone = ["**/*.md", "**/*.sql", "control_room/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
