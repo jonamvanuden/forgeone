@@ -156,12 +156,51 @@ def api_run(request: Request):
             diff = "".join(difflib.unified_diff(
                 to_yaml(prev["body"]).splitlines(True), cur_y.splitlines(True),
                 fromfile=f"build {prev['run_id']}", tofile=f"build {run_id}", n=2))
+        if a["kind"] == "report" and isinstance(a["body"], dict):   # reports are markdown, not YAML
+            arts.append({**a, "text": a["body"].get("markdown", ""), "yaml": None, "diff": None,
+                         "previous_run": None, "changed": []})
+            continue
         arts.append({**a, "yaml": cur_y, "diff": diff,
                      "previous_run": prev["run_id"] if prev else None,
                      "changed": spec_changes(prev["body"], a["body"]) if prev else []})
     run["artifacts"] = arts
     run["events"] = db.query(db.RUN_EVENTS, {"run_id": run_id})
+    run["kind"] = "agent" if run.get("name") == "agent.run" else "build"
+    run["labels"] = _safe(lambda: db.query(db.RUN_LABELS, {"run_id": run_id}), [])
+    run["tool_calls"] = db.query(db.RUN_TOOL_CALLS, {"run_id": run_id})
+    if run["kind"] == "agent":
+        meta = run.get("meta") or {}
+        run["title"] = meta.get("task") or "Agent run"
+        run["agent"], run["variant"], run["case_id"] = meta.get("agent"), meta.get("variant"), meta.get("case_id")
+        end = next((e["fields"] for e in run["events"] if e["event"] == "agent.end"), None) or {}
+        if not run.get("cost") and end.get("cost_usd"):
+            run["cost"] = end["cost_usd"]
+        if not run.get("llm_calls") and end.get("llm_calls"):
+            run["llm_calls"] = end["llm_calls"]
+            run["total_input_tokens"] = end.get("tokens_in", 0)
+            run["total_output_tokens"] = end.get("tokens_out", 0)
+        run["stop_reason"] = end.get("stop_reason")
     return JSON(run)
+
+
+def _safe(fn, default):
+    """For tables added by later migrations: an un-migrated database shows nothing instead of failing."""
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def api_quality(request: Request):
+    knowledge = _safe(lambda: db.query(db.KNOWLEDGE), None)
+    if knowledge is None:
+        return JSON({"migrated": False, "knowledge": [], "eval_runs": [], "agent_runs": []})
+    runs = db.query(db.AGENT_RUNS)
+    costs = sum_costs(db.query(db.AGENT_RUN_COSTS, {"run_ids": [r["run_id"] for r in runs]}), "run_id")
+    for r in runs:
+        # llm_calls is the source of truth; the runtime's own tally covers runs without call logging
+        r["cost"] = costs.get(r["run_id"], {}).get("cost") or r.pop("runtime_cost", None) or 0.0
+    return JSON({"migrated": True, "knowledge": knowledge, "eval_runs": db.query(db.EVAL_RUNS), "agent_runs": runs})
 
 
 def _delta(now, prev):
@@ -313,6 +352,7 @@ routes = [
     Route("/api/calls/{call_id:int}", api_call),
     Route("/api/errors", api_errors),
     Route("/api/docs", api_docs),
+    Route("/api/quality", api_quality),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
     Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
     Route("/", index),

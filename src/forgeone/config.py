@@ -31,6 +31,7 @@ def find_home(start: Path | None = None) -> Path:
 class Settings:
     home: Path
     builder_model: str = "claude-haiku-5-5"
+    agent_model: str = "claude-haiku-5-5"   # default model for agents ForgeOne built
     database_url: str | None = None
     runs_dir: Path = field(default=Path("runs"))
     docs_dir: Path = field(default=Path("docs"))
@@ -49,6 +50,7 @@ def settings() -> Settings:
     return Settings(
         home=home,
         builder_model=os.getenv("FORGEONE_MODEL", "claude-haiku-5-5"),
+        agent_model=os.getenv("FORGEONE_AGENT_MODEL", "claude-haiku-5-5"),
         database_url=os.getenv("DATABASE_URL"),
         runs_dir=rel("FORGEONE_RUNS_DIR", "runs"),
         docs_dir=rel("FORGEONE_DOCS_DIR", "docs"),

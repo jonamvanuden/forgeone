@@ -427,3 +427,14 @@ h1.goal { font-size: clamp(24px, 2.6vw, 32px); line-height: 1.2; font-weight: 70
 .reader-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 @media (max-width: 1200px) { .fig-grid { grid-template-columns: 1fr; } }
 @media (max-width: 820px) { .reader { padding: 22px 18px; } .doc-item { grid-template-columns: 1fr; } }
+
+/* ---------- quality ---------- */
+.knowledge td { vertical-align: top; }
+.kcell { min-width: 170px; border-left: 1px solid var(--line-soft); }
+.kcell > b { font-size: 20px; letter-spacing: -.02em; }
+.kcell span { color: var(--muted); font-size: 12px; }
+.kcell .ksub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.kcell.good > b { color: var(--ok); } .kcell.mid > b { color: #b7791f; } .kcell.low > b, .kcell.bad > b { color: var(--fail); }
+.kcell.best { background: var(--violet-50); box-shadow: inset 3px 0 0 var(--violet); }
+.warn { color: var(--fail); font-weight: 600; }
+@media (max-width: 820px) { .hide-sm { display: none; } }

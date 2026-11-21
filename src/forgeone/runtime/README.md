@@ -1,12 +1,12 @@
 # runtime
 
-Turns an `AgentSpec` into a running agent: one generic LangGraph loop
-(`agent -> tools -> agent ...`) that loads the spec's system prompt and allowlisted tools.
+Runs an `AgentSpec` on a task: `run_agent(spec, task, RunConfig(...), browser=...) -> AgentTrace`.
 
-**Planned interface**
-- `run(spec: AgentSpec, task: str) -> AgentTrace`: run one task, fully logged, return the trace evals consume
-
-**Rules**
-- One runtime for every generated agent. The builder never writes runtime code.
-- Enforces `max_steps` and cost budgets itself; the agent cannot raise its own limits.
-- Every tool call is logged with forgeone.observability so evals can check it.
+- One small explicit loop: model → tool calls → model … until the agent answers.
+- **Budgets enforced by the runtime**, never by the agent: `max_steps` (tool calls) and
+  `max_cost_usd`. Hitting one stops the run with `stop_reason` step_limit or cost_limit.
+- **Recorded for the knowledge base:** every tool call (args, ok, error, duration), tool errors,
+  recovery attempts (the first call after a failed one, and whether it worked), model retries,
+  tokens and cost.
+- Model API errors are retried twice with backoff; tool errors go back to the model so it can
+  recover; anything else ends the run with `stop_reason=error`.

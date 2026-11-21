@@ -31,6 +31,22 @@ forgeone db migrate                       # apply new schema migrations (safe to
 pytest -q                                 # unit tests, no API key needed
 ```
 
+## Running and evaluating agents
+One-time on the server: `pip install -e . && playwright install --with-deps chromium`.
+The agent version used is `agent/spec.yaml` on VoyagerOne's main (merge a build first),
+or pass `--spec runs/<run-id>/spec.yaml` to try an unmerged build.
+```bash
+forgeone run "What does WHO advise on free sugars?"       # real task; report in runs/<run-id>/
+forgeone label <run-id> good --note "checked the sources" # your verdict (bad also works)
+forgeone eval run --agent voyagerone                       # every variant x case x repeats (costs money!)
+forgeone eval run --variant haiku --case factual-who-sugar --repeats 1   # cheap smoke test
+forgeone eval report --agent voyagerone                    # what works per task type, per variant
+```
+Variants live in `~/VoyagerOne/evals/variants.yaml` (owner-only, like the suite).
+A full suite run is 10 cases x 3 repeats per variant: start with `--case` and `--repeats 1`.
+Agents can't open local or private addresses, or file://. For local tests only:
+`FORGEONE_ALLOW_PRIVATE_URLS=1`.
+
 ## Dashboard (systemd service)
 ```bash
 systemctl restart forgeone-dashboard

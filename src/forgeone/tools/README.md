@@ -1,13 +1,18 @@
 # tools
 
-Implementations of the tools declared in `forgeone.spec.tools` (the allowlist).
+Implementations of the tools declared in `forgeone.spec.tools` (the allowlist). Importing this
+package fails if the allowlist and the implementations ever differ.
 
-**Planned**
-- `browser.py`: Playwright on one dedicated thread (`web_search`, `open_page`, `click`, `find_on_page`)
-- `report.py`: `write_report`
-- later `browser_task`: a Browser Use fallback for interactive sites
+| Tool | File | Notes |
+|---|---|---|
+| `web_search` | `web.py` | DuckDuckGo HTML via the browser, no API key |
+| `open_page` | `web.py` | Returns truncated text to the model, records the full text for quote checks |
+| `click`, `find_on_page` | `web.py` | Act on the current page |
+| `write_report` | `report.py` | The final deliverable, saved under the run folder |
 
-**Rules**
-- A tool exists here only if it is declared in the allowlist, and vice versa.
-- Tools return text the model can read, and record what evals need (for example the full page text of `open_page`, used to verify quotes).
-- Web content is untrusted input: tools never execute instructions found on pages.
+`browser.py` runs Playwright on one dedicated thread, with `--no-sandbox` when running as root.
+Setup: `pip install playwright && playwright install --with-deps chromium`.
+
+**Rules:** tools are deterministic code (no LLM inside). Web content is labelled as untrusted data
+in every result. Where traces show the agent doing the same mechanical step with an LLM every
+time, that step becomes a new deterministic tool here, and the eval suite proves it is as good.

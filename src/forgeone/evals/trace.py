@@ -17,8 +17,11 @@ class ToolCall(BaseModel):
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
     ok: bool = True
+    error: str | None = None
     result_preview: str = ""
     page_text: str | None = Field(default=None, description="Full text for open_page, for quote checks.")
+    duration_ms: int | None = None
+    after_error: bool = Field(default=False, description="First call after a failed one: a recovery attempt.")
 
 
 class AgentTrace(BaseModel):
@@ -28,13 +31,30 @@ class AgentTrace(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     report: str | None = Field(default=None, description="Markdown passed to write_report.")
     final_answer: str = ""
+    agent: str | None = None
+    variant: str | None = None
+    model: str | None = None
     steps_limit: int | None = None
     hit_step_limit: bool = False
+    hit_cost_limit: bool = False
+    stop_reason: str | None = Field(default=None, description="finished | step_limit | cost_limit | error")
+    llm_calls: int = 0
+    llm_retries: int = 0
     error: str | None = None
     tokens_in: int = 0
     tokens_out: int = 0
     cost_usd: float | None = None
     duration_ms: int | None = None
+
+    @property
+    def tool_errors(self) -> int:
+        return sum(not c.ok for c in self.tool_calls)
+
+    @property
+    def recoveries(self) -> tuple[int, int]:
+        """(attempts, successes): how often the agent tried again after a failed tool call."""
+        attempts = [c for c in self.tool_calls if c.after_error]
+        return len(attempts), sum(c.ok for c in attempts)
 
     def calls(self, name: str) -> list[ToolCall]:
         return [c for c in self.tool_calls if c.name == name]

@@ -386,6 +386,7 @@ function artifactsHTML(arts) {
       const changed = a.previous_run
         ? a.changed.length ? `Changed since the previous version: ${esc(a.changed.join(", "))}` : "Identical to the previous version"
         : "First version of this spec";
+      if (a.text != null) return panel(`${a.kind}`, "what the agent delivered", `<pre class="code" style="margin-top:8px">${esc(a.text)}</pre>`);
       const body = tab === "diff" && a.diff ? `<pre class="code diff">${diffHTML(a.diff)}</pre>` : `<pre class="code">${esc(a.yaml)}</pre>`;
       return panel(`${a.kind}: ${a.name || "unnamed"}`, `${changed}${a.previous_run ? `, <a href="#/run/${esc(a.previous_run)}">open the previous build</a>` : ""}`,
         `<div class="tabs" role="tablist" style="margin-top:8px">
@@ -416,7 +417,10 @@ async function viewRun(runId, callId) {
   const data = JSON.stringify(r);
   if (data !== state.lastJSON) {
     state.lastJSON = data;
-    setCrumbs([{ label: "Overview", href: "#/" }, { label: r.title, href: `#/goal/${r.goal_key}` }, { label: `Build ${fmtDate(r.started_at)}` }]);
+    if (r.kind === "agent") {
+      setCrumbs([{ label: "Overview", href: "#/" }, { label: "Quality", href: "#/quality" }, { label: (r.title || "").slice(0, 60) }]);
+      document.querySelectorAll("[data-nav]").forEach((a) => (a.dataset.nav === "quality" ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+    } else setCrumbs([{ label: "Overview", href: "#/" }, { label: r.title, href: `#/goal/${r.goal_key}` }, { label: `Build ${fmtDate(r.started_at)}` }]);
     const calls = r.calls.length
       ? `<ul class="calls">${r.calls
           .map(
@@ -426,7 +430,7 @@ async function viewRun(runId, callId) {
             <span class="open">Open</span></button></li>`
           )
           .join("")}</ul>`
-      : `<div class="empty">No model calls in this build.</div>`;
+      : `<div class="empty">No model calls logged for this run.</div>`;
     const decisions = r.decisions.length
       ? `<ul class="decisions">${r.decisions
           .map((d) => {
@@ -441,13 +445,16 @@ async function viewRun(runId, callId) {
       : `<div class="empty">No decisions were logged in this build.</div>`;
 
     const kpi = (label, value) => `<div class="panel kpi"><div class="label">${esc(label)}</div><div class="value" style="font-size:22px">${value}</div></div>`;
+    const isAgent = r.kind === "agent";
+    const labels = (r.labels || []).map((l) => `${labelChip(l.label, l.source)}${l.note ? ` <span class="sub" style="display:inline">${esc(l.note)}</span>` : ""}`).join("<br>");
     main.innerHTML = `
       <section class="panel hero">
-        <div class="hero-top"><div><h1 class="goal">Build of ${esc(fmtDate(r.started_at))}</h1>
-          <div class="sub">${esc(r.title)}</div><div class="mono">${esc(r.run_id)}</div></div>
+        <div class="hero-top"><div><h1 class="goal">${isAgent ? esc(r.title) : `Build of ${esc(fmtDate(r.started_at))}`}</h1>
+          <div class="sub">${isAgent ? `${esc(r.agent || "agent")} run, variant ${esc(r.variant || "default")}${r.case_id && r.case_id !== "adhoc" ? `, eval case ${esc(r.case_id)}` : ""}, ${esc(fmtDate(r.started_at))}` : esc(r.title)}</div>
+          <div class="mono">${esc(r.run_id)}</div>${labels ? `<div style="margin-top:10px">${labels}</div>` : ""}</div>
           <div>${status(r.status)}</div></div>
       </section>
-      ${r.error ? `<div class="alert" style="margin-top:20px"><b>This build failed.</b> ${esc(r.error)}</div>` : ""}
+      ${r.error ? `<div class="alert" style="margin-top:20px"><b>This ${isAgent ? "run" : "build"} failed.</b> ${esc(r.error)}</div>` : ""}
       <div class="grid g-kpi">
         ${kpi("Duration", esc(fmtMs(r.duration_ms)))}
         ${kpi("Model calls", fmtInt(r.llm_calls))}
@@ -455,10 +462,12 @@ async function viewRun(runId, callId) {
         ${kpi("Cost", esc(fmtUSD(r.cost)))}
         ${kpi("Model", `<span class="text-value" title="${esc(r.model || "")}">${esc(r.model || "–")}</span>`)}
       </div>
-      ${panel("Timeline", "each step ForgeOne ran, in order", timeline(r.nodes))}
+      ${isAgent ? panel(`Tool calls (${r.tool_calls.length})`, "what the agent did, in order", `<div class="panel-body flush">${toolCallsHTML(r.tool_calls)}</div>`)
+                : panel("Timeline", "each step ForgeOne ran, in order", timeline(r.nodes))}
       <div class="grid g-1-1">
         ${panel("Model calls", "open one to read the exact prompt and answer", `<div class="panel-body flush">${calls}</div>`)}
-        ${panel("Decisions", "what ForgeOne chose, and why", `<div class="panel-body flush">${decisions}</div>`)}
+        ${isAgent ? panel("How it ended", "stop reason from the runtime", `<div class="panel-body"><b>${esc({ finished: "Finished: the agent gave its answer", step_limit: "Stopped: step budget used up", cost_limit: "Stopped: cost budget used up", error: "Stopped: error" }[r.stop_reason] || r.stop_reason || "unknown")}</b></div>`)
+                  : panel("Decisions", "what ForgeOne chose, and why", `<div class="panel-body flush">${decisions}</div>`)}
       </div>
       ${artifactsHTML(r.artifacts)}
       ${eventsHTML(r.events)}`;
@@ -493,6 +502,91 @@ async function viewErrors() {
       )
       .join("")}</div>`)}`;
   return true;
+}
+
+/* ---------------- quality: evals, knowledge, labels ---------------- */
+const labelChip = (label, source) =>
+  label ? `<span class="status ${label === "good" ? "ok" : "error"}">${label === "good" ? "Good" : "Bad"}${source === "checks" ? ", by checks" : ""}</span>` : `<span class="muted">unlabelled</span>`;
+
+function knowledgeMatrix(rows) {
+  const variants = [...new Set(rows.map((r) => r.variant_name))].sort();
+  const cats = [...new Set(rows.map((r) => r.category))].sort();
+  const cell = new Map(rows.map((r) => [`${r.category}|${r.variant_name}`, r]));
+  const head = `<tr><th>Task type</th>${variants.map((v) => `<th>${esc(v)}</th>`).join("")}<th>Best choice</th></tr>`;
+  const body = cats.map((c) => {
+    let best = null;
+    variants.forEach((v) => {
+      const r = cell.get(`${c}|${v}`);
+      if (!r || n(r.hard_failures)) return;
+      const key = [n(r.pass_k), -n(r.mean_cost_usd)];
+      if (!best || key[0] > best.key[0] || (key[0] === best.key[0] && key[1] > best.key[1])) best = { key, v };
+    });
+    const tds = variants.map((v) => {
+      const r = cell.get(`${c}|${v}`);
+      if (!r) return `<td class="muted">not tested</td>`;
+      const pk = Math.round(n(r.pass_k) * 100);
+      const tone = n(r.hard_failures) ? "bad" : pk >= 90 ? "good" : pk >= 60 ? "mid" : "low";
+      const att = n(r.recovery_attempts), ok = n(r.recovery_successes);
+      return `<td class="kcell ${tone} ${best && best.v === v ? "best" : ""}">
+        <b>${pk}%</b> <span>pass<sup>k</sup></span>
+        <div class="ksub">${esc(fmtUSD(r.mean_cost_usd))}/run, ${esc(fmtMs(r.mean_duration_ms))}, ${n(r.mean_tool_calls).toFixed(1)} tools</div>
+        <div class="ksub">${fmtInt(r.cases)} cases, ${fmtInt(r.runs)} runs${att ? `, recovered ${ok}/${att}` : ""}${n(r.hard_failures) ? `, <b class="warn">${fmtInt(r.hard_failures)} hard failures</b>` : ""}</div></td>`;
+    }).join("");
+    return `<tr><td><b>${esc(c)}</b></td>${tds}<td>${best ? `<span class="chip">${esc(best.v)}</span>` : '<span class="muted">none safe yet</span>'}</td></tr>`;
+  }).join("");
+  return `<div class="scroll-x"><table class="table knowledge">${head}${body}</table></div>`;
+}
+
+async function viewQuality() {
+  const q = await api("/api/quality");
+  const data = JSON.stringify(q);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Quality" }]);
+  if (!q.migrated) {
+    main.innerHTML = `<div class="page-head"><div><h1>Quality</h1></div></div><div class="alert"><b>The database needs a migration.</b> Run <code>forgeone db migrate</code> on the server.</div>`;
+    return true;
+  }
+  const byAgent = {};
+  q.knowledge.forEach((r) => (byAgent[r.agent] = byAgent[r.agent] || []).push(r));
+  const matrices = Object.entries(byAgent).map(([agent, rows]) =>
+    panel(`What works for ${agent}`, `suite ${esc(rows[0].suite_version)}; pass<sup>k</sup> = passed in every repeat`, `<div class="panel-body flush">${knowledgeMatrix(rows)}</div>`)).join("");
+  const evalRows = q.eval_runs.map((e) => {
+    const sc = e.scorecard || {};
+    return `<tr><td>${esc(fmtDate(e.started_at))}</td><td><b>${esc(e.variant_name || "default")}</b><div class="muted" style="font-size:12px">${esc(e.model || "")}</div></td>
+      <td class="hide-sm">${esc(e.agent)}</td><td class="r hide-sm">${fmtInt(e.cases)} x ${fmtInt(e.repeats)}</td>
+      <td class="r">${sc.pass_all_repeats != null ? `${Math.round(sc.pass_all_repeats * 100)}%` : "–"}</td>
+      <td class="r">${sc.pass_rate != null ? `${Math.round(sc.pass_rate * 100)}%` : "–"}</td>
+      <td class="r">${esc(fmtUSD(sc.mean_cost_usd))}</td>
+      <td class="r">${sc.hard_failures ? (sc.hard_failures.length ? `<span class="warn">${sc.hard_failures.length}</span>` : "0") : "–"}</td>
+      <td>${e.promoted ? '<span class="status ok">Champion</span>' : e.status === "running" ? status("running") : `<span class="muted" style="font-size:12.5px">${esc(e.gate?.reason || e.status)}</span>`}</td></tr>`;
+  }).join("");
+  const runRows = q.agent_runs.map((r) => `<tr data-href="#/run/${esc(r.run_id)}">
+      <td><a class="row-link" href="#/run/${esc(r.run_id)}">${esc(fmtDate(r.started_at))}</a></td>
+      <td>${esc((r.task || "").slice(0, 90))}${r.case_id && r.case_id !== "adhoc" ? `<div class="muted" style="font-size:12px">case ${esc(r.case_id)}</div>` : ""}</td>
+      <td class="hide-sm">${esc(r.variant || "default")}</td><td class="hide-sm">${esc(r.mode === "eval" ? "eval" : "real")}</td>
+      <td>${labelChip(r.label, r.label_source)}</td>
+      <td class="r hide-sm">${fmtMs(r.duration_ms)}</td><td class="r">${esc(fmtUSD(r.cost))}</td></tr>`).join("");
+  main.innerHTML = `
+    <div class="page-head"><div><h1>Quality</h1>
+      <p>Which agent variant works best for which kind of task, measured on the eval suite. Every run gets a verdict: from the checks automatically, and from you with <code>forgeone label</code>.</p></div></div>
+    ${matrices || panel("What works", "", `<div class="empty">No eval results yet. On the server: <code>forgeone eval run --agent voyagerone</code></div>`)}
+    ${panel("Eval runs", "one row per variant tested", q.eval_runs.length ? `<div class="scroll-x"><table class="table">
+      <thead><tr><th>Started</th><th>Variant</th><th class="hide-sm">Agent</th><th class="r hide-sm">Cases x repeats</th><th class="r">Pass<sup>k</sup></th><th class="r">Pass rate</th><th class="r">Cost/run</th><th class="r">Hard fails</th><th>Gate</th></tr></thead>
+      <tbody>${evalRows}</tbody></table></div>` : `<div class="empty">No eval runs yet.</div>`)}
+    ${panel("Agent runs", "real tasks and eval runs, newest first", q.agent_runs.length ? `<div class="scroll-x"><table class="table">
+      <thead><tr><th>Started</th><th>Task</th><th class="hide-sm">Variant</th><th class="hide-sm">Kind</th><th>Verdict</th><th class="r hide-sm">Duration</th><th class="r">Cost</th></tr></thead>
+      <tbody>${runRows}</tbody></table></div>` : `<div class="empty">No agent runs yet. On the server: <code>forgeone run "your research question"</code></div>`)}`;
+  return true;
+}
+
+function toolCallsHTML(calls) {
+  if (!calls.length) return `<div class="empty">No tool calls.</div>`;
+  return `<ul class="calls">${calls.map((c, i) => `<li><div class="call" style="cursor:default">
+      <span class="node">${i + 1}. ${esc(c.tool)}</span>
+      <span class="meta">${c.ok ? status("ok") : status("error")}${c.recovery_attempt ? ' <span class="chip">recovery attempt</span>' : ""}<br>
+        ${esc(Object.values(c.args || {}).join(", ").slice(0, 120))}${c.error ? `<br><span class="warn">${esc(c.error.slice(0, 140))}</span>` : ""}</span>
+      <span class="meta">${fmtMs(c.duration_ms)}</span></div></li>`).join("")}</ul>`;
 }
 
 /* ---------------- project docs ---------------- */
@@ -619,8 +713,9 @@ function closeSheet(navigate = true) {
 function parse() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
   if (parts[0] === "goal" && parts[1]) return { name: "goal", id: parts[1], nav: "goals" };
-  if (parts[0] === "run" && parts[1]) return { name: "run", id: parts[1], call: parts[2] === "call" ? parts[3] : null, nav: "goals" };
+  if (parts[0] === "run" && parts[1]) return { name: "run", id: parts[1], call: parts[2] === "call" ? parts[3] : null, nav: "goals" };  // nav refined after load
   if (parts[0] === "goals") return { name: "goals", nav: "goals" };
+  if (parts[0] === "quality") return { name: "quality", nav: "quality" };
   if (parts[0] === "docs" && parts[1]) return { name: "doc", id: parts[1], nav: "docs" };
   if (parts[0] === "docs") return { name: "docs", nav: "docs" };
   if (parts[0] === "errors") return { name: "errors", nav: "errors" };
@@ -636,6 +731,7 @@ async function render({ quiet = false } = {}) {
     if (route.name === "goal") await viewGoal(route.id);
     else if (route.name === "run") await viewRun(route.id, route.call);
     else if (route.name === "goals") await viewGoals();
+    else if (route.name === "quality") await viewQuality();
     else if (route.name === "docs") await viewDocs();
     else if (route.name === "doc") await viewDoc(route.id);
     else if (route.name === "errors") await viewErrors();

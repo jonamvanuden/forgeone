@@ -17,6 +17,7 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "starlette>=0.40",
   "uvicorn>=0.30",
+  "playwright>=1.45",
 ]
 
 [project.optional-dependencies]
