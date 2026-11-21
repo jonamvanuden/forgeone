@@ -408,7 +408,8 @@ h1.goal { font-size: clamp(24px, 2.6vw, 32px); line-height: 1.2; font-weight: 70
 .doc-item:first-child { border-top: 0; }
 .doc-item .day { width: 56px; height: 56px; border-radius: 14px; display: grid; place-items: center; text-align: center; line-height: 1.05; background: linear-gradient(140deg, #8a6bff, #5330e6); color: #fff; font-weight: 700; font-size: 11px; }
 .doc-item .day b { display: block; font-size: 20px; }
-.doc-item h3 { margin: 0 0 4px; font-size: 16px; }
+.doc-item .day.file { font-size: 10.5px; letter-spacing: .02em; background: linear-gradient(140deg, #b9a6ff, #6c47ff); }
+.doc-item h3 { margin: 0 0 4px; font-size: 16px; text-transform: none; }
 .doc-item h3 a { color: var(--ink); text-decoration: none; }
 .doc-item h3 a:hover { color: var(--violet-700); }
 .doc-item p { margin: 0; color: var(--ink-2); font-size: 13.5px; max-width: 80ch; }

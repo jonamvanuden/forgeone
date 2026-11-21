@@ -253,6 +253,30 @@ def api_call(request: Request):
     return JSON(call)
 
 
+DOC_INTERNAL = {"index.json", "docs.css"}
+DOC_KINDS = {".pdf": "PDF", ".docx": "Word", ".doc": "Word", ".md": "Markdown", ".txt": "Text",
+             ".pptx": "PowerPoint", ".xlsx": "Excel", ".csv": "CSV", ".html": "Web page",
+             ".png": "Image", ".jpg": "Image", ".jpeg": "Image", ".svg": "Image"}
+
+
+def api_docs(request: Request):
+    """The day documents from index.json, plus every other file in docs/ as a download."""
+    index_file = DOCS / "index.json"
+    days = json.loads(index_file.read_text(encoding="utf-8")) if index_file.exists() else []
+    listed = {Path(d.get(k, "")).name for d in days for k in ("html", "pdf")}
+    files = []
+    if DOCS.exists():
+        for p in sorted(DOCS.iterdir(), key=lambda p: p.name.lower()):
+            if (p.is_file() and not p.name.startswith(".") and p.name not in DOC_INTERNAL
+                    and p.name not in listed and p.suffix.lower() in DOC_KINDS):
+                st = p.stat()
+                files.append({"name": p.name, "title": p.stem.replace("-", " ").replace("_", " "),
+                              "kind": DOC_KINDS[p.suffix.lower()], "bytes": st.st_size,
+                              "modified": dt.datetime.fromtimestamp(st.st_mtime, dt.timezone.utc),
+                              "url": f"/docs/{p.name}"})
+    return JSON({"days": days, "files": files})
+
+
 def api_errors(request: Request):
     """One entry per failure: a failed model call, its step and its build share one error.
     Keep the most useful record (the one with a traceback) and count the duplicates."""
@@ -288,6 +312,7 @@ routes = [
     Route("/api/runs/{run_id}", api_run),
     Route("/api/calls/{call_id:int}", api_call),
     Route("/api/errors", api_errors),
+    Route("/api/docs", api_docs),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
     Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
     Route("/", index),

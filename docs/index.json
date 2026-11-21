@@ -6,5 +6,13 @@
     "summary": "Everything built on day one: the builder graph, the AgentSpec contract, observability, the Postgres event store, the Control Room and the server setup. Plus the plan for the feedback loop: how to evaluate agents so they keep getting better.",
     "html": "/docs/day-01.html",
     "pdf": "/docs/day-01.pdf"
+  },
+  {
+    "slug": "day-02",
+    "title": "Day 2: Architecture",
+    "date": "2026-11-21",
+    "summary": "How ForgeOne is organised as a long-lived product: the package map and dependency rules, agents in their own repositories (VoyagerOne), how a build is published, the evaluation architecture (suites, checks, scorecards, promotion gate), versioned migrations and the server changes.",
+    "html": "/docs/day-02.html",
+    "pdf": "/docs/day-02.pdf"
   }
 ]

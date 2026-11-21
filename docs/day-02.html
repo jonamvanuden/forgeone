@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForgeOne, Day 2: Architecture</title>
+<link rel="stylesheet" href="docs.css">
+<style>body { margin: 0; padding: 40px 24px; background: #fff; } .doc { margin: 0 auto; }</style>
+</head>
+<body>
+<article class="doc" id="doc">
+
+<h1>ForgeOne, Day 2: Architecture</h1>
+<div class="doc-meta">Saturday 21 November 2026, afternoon. How ForgeOne is organised as a long-lived product, why, and where every responsibility lives.</div>
+
+<div class="summary">
+  <h3>What changed on Day 2</h3>
+  <ul>
+    <li>ForgeOne became an <strong>installable product</strong>: one package, <code>src/forgeone</code>, organised by capability, with a <code>forgeone</code> command.</li>
+    <li><strong>Factory and product are separated.</strong> Agents no longer live inside ForgeOne. VoyagerOne has its own repository, and ForgeOne publishes each build there on a branch you approve by merging.</li>
+    <li><strong>Evaluation is now the core of the codebase</strong>: an eval suite format, a trace model, programmatic checks with hard gates, scorecards and a promotion gate, all tested.</li>
+    <li>The database schema is <strong>versioned</strong> with migrations, and has tables ready for eval results.</li>
+    <li>The Control Room got a professional violet design, cost tracking in dollars, a pricing fix, a phone layout and this documents page.</li>
+  </ul>
+</div>
+
+<ol class="toc">
+  <li>Why restructure</li>
+  <li>The package map</li>
+  <li>Dependency rules</li>
+  <li>Factory and product: agent repositories</li>
+  <li>A build, step by step</li>
+  <li>The evaluation architecture</li>
+  <li>The store and migrations</li>
+  <li>Configuration and the command line</li>
+  <li>The Control Room</li>
+  <li>Server changes</li>
+  <li>What comes next</li>
+</ol>
+
+<!-- ============================================================ 1 -->
+<h2><span class="chap">1</span>Why restructure</h2>
+<p>At the end of Day 1, ForgeOne was a handful of Python files in the root of the repository: one file for the graph, one for logging, one for the database, a dashboard folder and a goal folder. That works for a prototype, but not for a product that will grow for years. Three problems would have hit us soon:</p>
+<ul>
+  <li><strong>No place for new capabilities.</strong> The runtime, browser tools, judges and a registry of agent versions had no obvious home, so they would have ended up mixed into existing files.</li>
+  <li><strong>The factory and its products were mixed.</strong> The VoyagerOne goal and its eval suite lived inside ForgeOne, so every agent would have bloated the factory's repository and history.</li>
+  <li><strong>Hard to verify.</strong> Without a package structure and tests, every change risked breaking something unnoticed.</li>
+</ul>
+<p>The fix follows the standard for long-lived Python products: a <strong>src layout</strong> (code in <code>src/forgeone</code>, installed with <code>pip install -e .</code>), one sub-package per capability, explicit rules about which package may use which, and tests that run without an API key or network.</p>
+
+<!-- ============================================================ 2 -->
+<h2><span class="chap">2</span>The package map</h2>
+<figure>
+<svg viewBox="0 0 860 440" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs><marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker></defs>
+  <rect x="10" y="10" width="840" height="420" rx="18" fill="#faf9fe" stroke="#e6e1f3"/>
+  <text x="30" y="38" font-weight="700" fill="#1d1340" font-size="13">src/forgeone</text>
+  <!-- row 1: what ForgeOne does -->
+  <text x="30" y="70" fill="#7d7699" font-size="11">What ForgeOne does</text>
+  <rect x="30" y="80" width="180" height="70" rx="12" fill="#6c47ff"/><text x="120" y="108" text-anchor="middle" fill="#fff" font-weight="700">builder</text><text x="120" y="128" text-anchor="middle" fill="#e4dbff" font-size="11">goal → AgentSpec</text>
+  <rect x="230" y="80" width="240" height="70" rx="12" fill="#1d1340"/><text x="350" y="108" text-anchor="middle" fill="#fff" font-weight="700">evals ★ the core</text><text x="350" y="128" text-anchor="middle" fill="#b9a6ff" font-size="11">suite, checks, judges, score, gate</text>
+  <rect x="490" y="80" width="160" height="70" rx="12" fill="#fff" stroke="#6c47ff"/><text x="570" y="108" text-anchor="middle" fill="#1c1633" font-weight="700">workspace</text><text x="570" y="128" text-anchor="middle" fill="#4a4366" font-size="11">agent repositories</text>
+  <rect x="670" y="80" width="160" height="70" rx="12" fill="#fff" stroke="#6c47ff"/><text x="750" y="108" text-anchor="middle" fill="#1c1633" font-weight="700">control_room</text><text x="750" y="128" text-anchor="middle" fill="#4a4366" font-size="11">dashboard (read-only)</text>
+  <!-- row 2: what agents need -->
+  <text x="30" y="182" fill="#7d7699" font-size="11">What agents need (planned folders with a README each)</text>
+  <rect x="30" y="192" width="150" height="58" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="105" y="217" text-anchor="middle" fill="#5330e6" font-weight="700">runtime</text><text x="105" y="235" text-anchor="middle" fill="#4a4366" font-size="11">spec → running agent</text>
+  <rect x="195" y="192" width="150" height="58" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="270" y="217" text-anchor="middle" fill="#5330e6" font-weight="700">tools</text><text x="270" y="235" text-anchor="middle" fill="#4a4366" font-size="11">browser, report</text>
+  <rect x="360" y="192" width="150" height="58" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="435" y="217" text-anchor="middle" fill="#5330e6" font-weight="700">registry</text><text x="435" y="235" text-anchor="middle" fill="#4a4366" font-size="11">versions, champion</text>
+  <rect x="525" y="192" width="150" height="58" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="600" y="217" text-anchor="middle" fill="#5330e6" font-weight="700">safety</text><text x="600" y="235" text-anchor="middle" fill="#4a4366" font-size="11">limits, injection, sandbox</text>
+  <rect x="690" y="192" width="140" height="58" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="760" y="217" text-anchor="middle" fill="#5330e6" font-weight="700">memory</text><text x="760" y="235" text-anchor="middle" fill="#4a4366" font-size="11">across runs</text>
+  <!-- row 3: foundation -->
+  <text x="30" y="282" fill="#7d7699" font-size="11">Foundation used by everything</text>
+  <rect x="30" y="292" width="150" height="58" rx="12" fill="#f1ecff" stroke="#b9a6ff"/><text x="105" y="317" text-anchor="middle" fill="#1c1633" font-weight="700">spec</text><text x="105" y="335" text-anchor="middle" fill="#4a4366" font-size="11">contracts, allowlist</text>
+  <rect x="195" y="292" width="150" height="58" rx="12" fill="#f1ecff" stroke="#b9a6ff"/><text x="270" y="317" text-anchor="middle" fill="#1c1633" font-weight="700">llm</text><text x="270" y="335" text-anchor="middle" fill="#4a4366" font-size="11">models, pricing</text>
+  <rect x="360" y="292" width="170" height="58" rx="12" fill="#f1ecff" stroke="#b9a6ff"/><text x="445" y="317" text-anchor="middle" fill="#1c1633" font-weight="700">observability</text><text x="445" y="335" text-anchor="middle" fill="#4a4366" font-size="11">events, tracing, redaction</text>
+  <rect x="545" y="292" width="150" height="58" rx="12" fill="#f1ecff" stroke="#b9a6ff"/><text x="620" y="317" text-anchor="middle" fill="#1c1633" font-weight="700">store</text><text x="620" y="335" text-anchor="middle" fill="#4a4366" font-size="11">Postgres, migrations</text>
+  <rect x="710" y="292" width="120" height="58" rx="12" fill="#f1ecff" stroke="#b9a6ff"/><text x="770" y="317" text-anchor="middle" fill="#1c1633" font-weight="700">config, cli</text><text x="770" y="335" text-anchor="middle" fill="#4a4366" font-size="11">settings, commands</text>
+  <text x="30" y="390" fill="#4a4366" font-size="11.5">Solid: working today.  Dashed: planned, folder and README already in place.</text>
+  <text x="30" y="410" fill="#4a4366" font-size="11.5">Higher rows may use lower rows, never the other way round.</text>
+</svg>
+<figcaption>Figure 1. ForgeOne by capability. The top row is what the product does, the middle row what agents need at runtime, the bottom row the shared foundation.</figcaption>
+</figure>
+
+<table>
+  <tr><th>Package</th><th>Responsibility</th><th>Status</th></tr>
+  <tr><td><code>builder/</code></td><td>Turns a goal into an AgentSpec. Split into <code>nodes/</code> (plan, build), <code>prompts/*.md</code> and <code>state.py</code>. Later: the test, judge and repair loop.</td><td>working</td></tr>
+  <tr><td><code>evals/</code></td><td>Everything about telling a better agent from a worse one (chapter 6).</td><td>checks, scoring, gate working</td></tr>
+  <tr><td><code>workspace/</code></td><td>Agent repositories: registry, readiness checks, publishing, new-agent templates (chapter 4).</td><td>working</td></tr>
+  <tr><td><code>control_room/</code></td><td>The dashboard: JSON API plus single-page interface. Only reads the database.</td><td>working</td></tr>
+  <tr><td><code>runtime/</code>, <code>tools/</code></td><td>Run a spec as a real agent, with Playwright browser tools.</td><td>next</td></tr>
+  <tr><td><code>registry/</code>, <code>memory/</code></td><td>Agent versions and champions; what persists across runs.</td><td>later</td></tr>
+  <tr><td><code>safety/</code></td><td>Everything that limits agents: allowlist, budgets, injection defences, sandbox.</td><td>partly</td></tr>
+  <tr><td><code>spec/</code></td><td>The AgentSpec contract and the tool allowlist.</td><td>working</td></tr>
+  <tr><td><code>llm/</code></td><td>The only place that knows the model provider; price list and cost calculation.</td><td>working</td></tr>
+  <tr><td><code>observability/</code></td><td>Split into <code>context</code>, <code>events</code>, <code>tracing</code>, <code>llm_logger</code>, <code>redaction</code>.</td><td>working</td></tr>
+  <tr><td><code>store/</code></td><td>Postgres sink, writer, backfill, versioned migrations.</td><td>working</td></tr>
+  <tr><td><code>config.py</code>, <code>cli.py</code></td><td>All settings in one place; the <code>forgeone</code> command.</td><td>working</td></tr>
+</table>
+
+<!-- ============================================================ 3 -->
+<h2><span class="chap">3</span>Dependency rules</h2>
+<p>Structure only helps if it is kept. These rules are written in <code>ARCHITECTURE.md</code> and several are enforced in code:</p>
+<ol>
+  <li><code>spec</code>, <code>llm</code>, <code>config</code> and <code>observability</code> depend on nothing else in ForgeOne (apart from <code>config</code>). They are the foundation.</li>
+  <li><code>builder</code>, <code>runtime</code> and <code>evals</code> use the foundation, never each other's internals. The builder will talk to evals only through its public functions.</li>
+  <li><code>control_room</code> only reads from the database. It never imports the builder or runtime, so the dashboard can never start or change anything.</li>
+  <li><strong>The builder never reads an eval suite.</strong> Suites live in the agent repository and are loaded only by <code>evals</code>. An agent factory that sees its own exam learns to pass the exam instead of doing the job.</li>
+  <li><strong>ForgeOne writes only inside an agent repository's <code>agent/</code> folder</strong>, always through <code>AgentRepo.publish</code>, which refuses anything else.</li>
+  <li>Every database change is a new numbered migration; applied migrations are never edited.</li>
+  <li>Prompts are files, not strings in code, so every prompt change shows up in a diff.</li>
+</ol>
+
+<!-- ============================================================ 4 -->
+<h2 class="new-page"><span class="chap">4</span>Factory and product: agent repositories</h2>
+<p>ForgeOne is the <strong>factory</strong>; VoyagerOne is a <strong>product</strong> it builds. Products have their own lifecycle, history, owners and deployments, so each agent lives in its own git repository. ForgeOne keeps only a list of the agents it manages in <code>agents.yaml</code>.</p>
+<figure>
+<svg viewBox="0 0 860 330" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs><marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker>
+  <marker id="b2r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d9435a"/></marker></defs>
+  <rect x="10" y="20" width="330" height="290" rx="16" fill="#faf9fe" stroke="#1d1340" stroke-width="1.5"/>
+  <text x="30" y="48" font-weight="700" fill="#1d1340" font-size="13">ForgeOne (factory)</text>
+  <rect x="30" y="66" width="290" height="44" rx="10" fill="#fff" stroke="#b9a6ff"/><text x="44" y="93" fill="#1c1633"><tspan font-weight="700">agents.yaml</tspan>  which repos, where, which branch</text>
+  <rect x="30" y="122" width="290" height="44" rx="10" fill="#fff" stroke="#b9a6ff"/><text x="44" y="149" fill="#1c1633"><tspan font-weight="700">builder</tspan>  reads goal.md only</text>
+  <rect x="30" y="178" width="290" height="44" rx="10" fill="#fff" stroke="#b9a6ff"/><text x="44" y="205" fill="#1c1633"><tspan font-weight="700">evals</tspan>  reads evals/suite.yaml only</text>
+  <rect x="30" y="234" width="290" height="56" rx="10" fill="#6c47ff"/><text x="44" y="258" fill="#fff" font-weight="700">workspace.publish</text><text x="44" y="278" fill="#e4dbff" font-size="11">writes agent/ only, on branch forgeone/&lt;run-id&gt;</text>
+  <rect x="520" y="20" width="330" height="290" rx="16" fill="#fff" stroke="#6c47ff" stroke-width="1.5"/>
+  <text x="540" y="48" font-weight="700" fill="#1d1340" font-size="13">VoyagerOne (product repository)</text>
+  <text x="540" y="84" fill="#1c1633"><tspan font-weight="700">forgeone.yaml</tspan>   manifest</text><text x="830" y="84" text-anchor="end" fill="#7d7699" font-size="11">you</text>
+  <text x="540" y="126" fill="#1c1633"><tspan font-weight="700">goal.md</tspan>   what to build</text><text x="830" y="126" text-anchor="end" fill="#7d7699" font-size="11">you</text>
+  <text x="540" y="168" fill="#1c1633"><tspan font-weight="700">evals/suite.yaml</tspan>   the exam</text><text x="830" y="168" text-anchor="end" fill="#d9435a" font-size="11" font-weight="700">you only</text>
+  <rect x="530" y="232" width="310" height="62" rx="10" fill="#f1ecff" stroke="#b9a6ff"/>
+  <text x="540" y="256" fill="#1c1633"><tspan font-weight="700">agent/spec.yaml</tspan>   the built agent</text><text x="830" y="256" text-anchor="end" fill="#5330e6" font-size="11">ForgeOne</text>
+  <text x="540" y="280" fill="#1c1633"><tspan font-weight="700">agent/BUILD.md</tspan>   how it was built</text><text x="830" y="280" text-anchor="end" fill="#5330e6" font-size="11">ForgeOne</text>
+  <path d="M322 144 C 420 144, 440 122, 526 122" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#b2)"/><text x="425" y="120" text-anchor="middle" fill="#4a4366" font-size="11">reads</text>
+  <path d="M322 200 C 420 200, 440 166, 526 166" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#b2)"/><text x="425" y="196" text-anchor="middle" fill="#4a4366" font-size="11">reads</text>
+  <path d="M322 262 H526" stroke="#6c47ff" stroke-width="2.5" marker-end="url(#b2)"/><text x="425" y="254" text-anchor="middle" fill="#4a4366" font-size="11">commits + pushes</text>
+  <path d="M322 214 C 380 230, 470 200, 526 172" stroke="#d9435a" stroke-width="1.5" stroke-dasharray="4 3" fill="none"/><text x="425" y="226" text-anchor="middle" fill="#d9435a" font-size="10.5">never writes here</text>
+</svg>
+<figcaption>Figure 2. Who may read and write what. The builder can read the goal, evals can read the suite, and only publish can write, and only into agent/.</figcaption>
+</figure>
+
+<h3>The registry</h3>
+<pre><code># agents.yaml in the ForgeOne root
+agents:
+  voyagerone:
+    path: ../VoyagerOne                                        # checkout next to ForgeOne
+    remote: git@github-voyagerone:jonamvanuden/VoyagerOne.git  # SSH alias with its own deploy key
+    branch: main</code></pre>
+
+<h3>Publishing: how a new version arrives</h3>
+<ul>
+  <li><strong>Default, <code>--publish branch</code>:</strong> a new branch <code>forgeone/&lt;run-id&gt;</code> with one commit authored by "ForgeOne", pushed to GitHub. You read the diff and merge it: <strong>merging is the approval</strong>. Your <code>main</code> is never touched by the builder.</li>
+  <li><code>--publish main</code> commits straight to main (for quick iteration). <code>--publish none</code> leaves the repository alone.</li>
+  <li>If the new spec is identical to the one on main, nothing is published and nothing fails. A fresh <code>BUILD.md</code> alone is not a new version.</li>
+</ul>
+
+<h3>Safety rules, enforced in code and covered by tests</h3>
+<table>
+  <tr><th>Rule</th><th>Why</th></tr>
+  <tr><td>Before a build, the agent repo must be a clean checkout of its base branch; ForgeOne pulls it first</td><td>Builds start from the reviewed state, and the check runs <strong>before any tokens are spent</strong></td></tr>
+  <tr><td>Publish writes only paths under <code>agent/</code>; staging anything else aborts the commit</td><td>The builder can never change the goal or its own exam</td></tr>
+  <tr><td>On any error the repository is reset to exactly how it was, and the branch removed</td><td>A failed build never leaves half-written files behind</td></tr>
+  <tr><td>Separate deploy key per repository (<code>github-forgeone</code>, <code>github-voyagerone</code>)</td><td>A key for one repository can never write to another</td></tr>
+</table>
+
+<h3>New agents</h3>
+<p><code>forgeone agent init &lt;name&gt; --path ../&lt;Name&gt;</code> creates a new agent repository from templates: manifest, goal, a starter eval suite with one trap task, <code>agent/</code> and a README explaining the ownership rules. VoyagerOne itself was created with this command.</p>
+
+<!-- ============================================================ 5 -->
+<h2><span class="chap">5</span>A build, step by step</h2>
+<figure>
+<svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs><marker id="b3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker></defs>
+  <g font-weight="700" fill="#fff">
+    <rect x="10" y="30" width="150" height="62" rx="12" fill="#1d1340"/><text x="85" y="56" text-anchor="middle">1 Check</text>
+    <rect x="185" y="30" width="150" height="62" rx="12" fill="#6c47ff"/><text x="260" y="56" text-anchor="middle">2 Start run</text>
+    <rect x="360" y="30" width="150" height="62" rx="12" fill="#6c47ff"/><text x="435" y="56" text-anchor="middle">3 Plan</text>
+    <rect x="535" y="30" width="150" height="62" rx="12" fill="#6c47ff"/><text x="610" y="56" text-anchor="middle">4 Build</text>
+    <rect x="710" y="30" width="140" height="62" rx="12" fill="#12a06b"/><text x="780" y="56" text-anchor="middle">5 Publish</text>
+  </g>
+  <g fill="#e4dbff" font-size="10.5" text-anchor="middle">
+    <text x="85" y="76" fill="#b9a6ff">repo clean? pull</text>
+    <text x="260" y="76">run_id, logs, DB</text>
+    <text x="435" y="76">goal.md → plan</text>
+    <text x="610" y="76">plan → AgentSpec</text>
+    <text x="780" y="76" fill="#e7f6ef">branch + push</text>
+  </g>
+  <path d="M160 61 H181" stroke="#6c47ff" stroke-width="2" marker-end="url(#b3)"/>
+  <path d="M335 61 H356" stroke="#6c47ff" stroke-width="2" marker-end="url(#b3)"/>
+  <path d="M510 61 H531" stroke="#6c47ff" stroke-width="2" marker-end="url(#b3)"/>
+  <path d="M685 61 H706" stroke="#6c47ff" stroke-width="2" marker-end="url(#b3)"/>
+  <rect x="10" y="130" width="840" height="150" rx="14" fill="#faf9fe" stroke="#e6e1f3"/>
+  <text x="30" y="158" font-weight="700" fill="#1c1633">Recorded along the way</text>
+  <text x="30" y="184" fill="#4a4366">• runs/&lt;run_id&gt;/events.jsonl and payloads: every step, model call, decision (the source of truth)</text>
+  <text x="30" y="208" fill="#4a4366">• Postgres: run, model calls with tokens and cost, decisions (including "published" with branch and commit), the spec artifact</text>
+  <text x="30" y="232" fill="#4a4366">• VoyagerOne: agent/spec.yaml + agent/BUILD.md (model, goal commit, spec summary, plan, link to the Control Room)</text>
+  <text x="30" y="256" fill="#4a4366">• Terminal: the GitHub link to review the new branch</text>
+</svg>
+<figcaption>Figure 3. One build. Step 1 fails fast and costs nothing; step 5 is where a human comes in, by reviewing and merging the branch.</figcaption>
+</figure>
+<pre><code>$ forgeone build --agent voyagerone
+spec: runs/20261121-160555-42a20b/spec.yaml
+published to voyagerone: branch forgeone/20261121-160555-42a20b @ 31af517, pushed
+review: https://github.com/jonamvanuden/VoyagerOne/compare/main...forgeone/20261121-160555-42a20b?expand=1</code></pre>
+
+<!-- ============================================================ 6 -->
+<h2><span class="chap">6</span>The evaluation architecture</h2>
+<p>Day 1 described the feedback loop as a plan. Day 2 gives it a home in code: <code>src/forgeone/evals</code>. A result flows through five stages:</p>
+<figure>
+<svg viewBox="0 0 860 250" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <defs><marker id="b4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6c47ff"/></marker></defs>
+  <rect x="10" y="40" width="140" height="80" rx="12" fill="#fff" stroke="#6c47ff"/><text x="80" y="70" text-anchor="middle" font-weight="700" fill="#1c1633">suite.py</text><text x="80" y="90" text-anchor="middle" fill="#4a4366" font-size="11">the exam</text><text x="80" y="106" text-anchor="middle" fill="#4a4366" font-size="11">(agent repo)</text>
+  <rect x="180" y="40" width="140" height="80" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="250" y="70" text-anchor="middle" font-weight="700" fill="#5330e6">runner.py</text><text x="250" y="90" text-anchor="middle" fill="#4a4366" font-size="11">runs each case</text><text x="250" y="106" text-anchor="middle" fill="#4a4366" font-size="11">k times (next)</text>
+  <rect x="350" y="40" width="140" height="80" rx="12" fill="#fff" stroke="#6c47ff"/><text x="420" y="70" text-anchor="middle" font-weight="700" fill="#1c1633">trace.py</text><text x="420" y="90" text-anchor="middle" fill="#4a4366" font-size="11">what the agent</text><text x="420" y="106" text-anchor="middle" fill="#4a4366" font-size="11">observably did</text>
+  <rect x="520" y="16" width="150" height="58" rx="12" fill="#1d1340"/><text x="595" y="42" text-anchor="middle" font-weight="700" fill="#fff">checks/</text><text x="595" y="60" text-anchor="middle" fill="#b9a6ff" font-size="11">code, hard gates</text>
+  <rect x="520" y="90" width="150" height="58" rx="12" fill="#fff" stroke="#b9a6ff" stroke-dasharray="5 3"/><text x="595" y="116" text-anchor="middle" font-weight="700" fill="#5330e6">judges/</text><text x="595" y="134" text-anchor="middle" fill="#4a4366" font-size="11">rubric, evidence</text>
+  <rect x="700" y="16" width="150" height="58" rx="12" fill="#fff" stroke="#6c47ff"/><text x="775" y="42" text-anchor="middle" font-weight="700" fill="#1c1633">scoring.py</text><text x="775" y="60" text-anchor="middle" fill="#4a4366" font-size="11">scorecard</text>
+  <rect x="700" y="90" width="150" height="58" rx="12" fill="#12a06b"/><text x="775" y="116" text-anchor="middle" font-weight="700" fill="#fff">gate.py</text><text x="775" y="134" text-anchor="middle" fill="#e7f6ef" font-size="11">promote or reject</text>
+  <path d="M150 80 H176" stroke="#6c47ff" stroke-width="2" marker-end="url(#b4)"/>
+  <path d="M320 80 H346" stroke="#6c47ff" stroke-width="2" marker-end="url(#b4)"/>
+  <path d="M490 70 C 505 60, 505 45, 516 45" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#b4)"/>
+  <path d="M490 90 C 505 100, 505 119, 516 119" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#b4)"/>
+  <path d="M670 45 H696" stroke="#6c47ff" stroke-width="2" marker-end="url(#b4)"/>
+  <path d="M670 119 C 683 100, 683 80, 696 60" stroke="#6c47ff" stroke-width="2" fill="none" marker-end="url(#b4)"/>
+  <path d="M775 74 V86" stroke="#6c47ff" stroke-width="2" marker-end="url(#b4)"/>
+  <text x="10" y="190" fill="#4a4366" font-size="11.5">Solid: built and tested on Day 2.  Dashed: next, once the runtime can run real research tasks.</text>
+  <text x="10" y="212" fill="#4a4366" font-size="11.5">Evaluation depends only on traces, never on how an agent is implemented. Any future agent can be evaluated the same way.</text>
+</svg>
+<figcaption>Figure 4. The evaluation pipeline. Code checks come first because they are exact, free and impossible to fool; model judges handle only what code cannot.</figcaption>
+</figure>
+
+<h3>The eval suite</h3>
+<p>Each agent's suite is a YAML file in its own repository (<code>evals/suite.yaml</code>). A case has a stable id, a category, the task, the checks to run, reference notes for the judge, and optionally <code>expect_not_found</code> for trap tasks or a cost budget. The suite has a <strong>version hash</strong>: results are only compared on the same version, so changing a case never silently mixes old and new numbers. VoyagerOne starts with 10 cases across 7 categories: factual, comparison, recency, trap, conflicting, navigation and safety.</p>
+
+<h3>The checks</h3>
+<table>
+  <tr><th>Check</th><th>Gate</th><th>Catches</th></tr>
+  <tr><td><code>cited_urls_were_opened</code></td><td>hard</td><td>Fabricated sources: a URL in the report that the agent never opened</td></tr>
+  <tr><td><code>quotes_found_on_pages</code></td><td>hard</td><td>Invented quotes: quoted sentences not found on any page read</td></tr>
+  <tr><td><code>admits_not_found</code></td><td>hard</td><td>Trap tasks answered as if the non-existent thing were real</td></tr>
+  <tr><td><code>within_step_budget</code>, <code>within_cost_budget</code></td><td>hard</td><td>Runaway loops and cost explosions</td></tr>
+  <tr><td><code>has_sources</code>, <code>write_report_once</code>, <code>no_run_error</code></td><td>soft</td><td>Format and process errors</td></tr>
+</table>
+<p><code>forgeone eval checks</code> lists them all. New checks are one function with a decorator, <code>@check("name", hard=True)</code>, and suites refer to them by name.</p>
+
+<h3>Scorecard and gate</h3>
+<ul>
+  <li><strong>Scorecard:</strong> pass rate per run, <strong>pass^k</strong> (share of cases passed in every repeat), pass rate per category, average judge scores, failure-tag counts, average cost, and the list of hard failures.</li>
+  <li><strong>Gate</strong> (champion vs challenger): any hard failure rejects; any category that drops more than 10 percentage points rejects; otherwise promote if pass^k improves, or if quality is equal and cost is lower.</li>
+  <li><strong>Judge rubric</strong> for research reports (<code>judges/rubrics/research_report.md</code>): faithfulness, completeness and reasoning on an anchored 1, 3, 5 scale, evidence required for every score, plus the failure-tag list from Day 1.</li>
+</ul>
+
+<!-- ============================================================ 7 -->
+<h2><span class="chap">7</span>The store and migrations</h2>
+<p>The database schema is now versioned. Each change is a numbered SQL file in <code>src/forgeone/store/migrations/</code>; a table <code>schema_migrations</code> records which have run; <code>forgeone db migrate</code> applies the rest, each in its own transaction. Docker runs all migrations automatically when a new database is created.</p>
+<table>
+  <tr><th>Migration</th><th>Contents</th></tr>
+  <tr><td><code>001_initial</code></td><td>runs, events, llm_calls, decisions, artifacts, dashboard views (Day 1)</td></tr>
+  <tr><td><code>002_evals</code></td><td><code>eval_runs</code> (agent version, suite version, scorecard, gate decision) and <code>eval_results</code> (per case and repeat: checks, judge scores, failure tags, cost, link to the trace)</td></tr>
+</table>
+<p>Migration <code>001</code> is written so it can run on a database that already has those tables, so existing installations migrate in place. This was tested on a copy holding real data: 22 runs and 43 model calls before, the same after.</p>
+
+<!-- ============================================================ 8 -->
+<h2><span class="chap">8</span>Configuration and the command line</h2>
+<p>All settings live in <code>config.py</code> and come from the environment (<code>.env</code>, template in <code>.env.example</code>). The project root is found automatically, or set with <code>FORGEONE_HOME</code>.</p>
+<pre><code>forgeone build --agent voyagerone [--publish branch|main|none]
+forgeone agent list | status &lt;name&gt; | init &lt;name&gt; --path ../&lt;Name&gt;
+forgeone eval validate --agent voyagerone
+forgeone eval checks
+forgeone db migrate | status | backfill
+forgeone control-room [--port 8501]
+pytest -q                     # 39 tests, no API key or network needed</code></pre>
+<p>The old commands, <code>python -m forgeone.graph</code> and <code>python -m forgeone.store status</code>, still work.</p>
+
+<!-- ============================================================ 9 -->
+<h2><span class="chap">9</span>The Control Room</h2>
+<ul>
+  <li><strong>Design:</strong> deep violet sidebar, light workspace, white panels, Plus Jakarta Sans; passed builds show violet in the build strips.</li>
+  <li><strong>Overview:</strong> weekly numbers with change against last week, builds and spend per day, goals, recent activity, model usage by cost, step performance.</li>
+  <li><strong>Cost in dollars</strong> on every level, from <code>llm/pricing.py</code>. A bug was fixed: model names reported with a date suffix (<code>claude-sonnet-5-5-20260928</code>) were counted as free. They are now priced, and any model without a known price is shown as a warning instead of being treated as $0.</li>
+  <li><strong>Phones:</strong> a bottom tab bar, single-column panels and a full-screen model-call panel below 820 pixels.</li>
+  <li><strong>Project docs:</strong> these documents, readable in the app and as PDF; any other file placed in <code>docs/</code> appears automatically with a download button.</li>
+</ul>
+
+<!-- ============================================================ 10 -->
+<h2 class="new-page"><span class="chap">10</span>Server changes</h2>
+<p>One-time steps after pulling Day 2:</p>
+<pre><code>cd ~/ForgeOne &amp;&amp; source .venv/bin/activate &amp;&amp; git pull
+pip install -e ".[dev]"                                   # installs the package and the forgeone command
+sed -i 's#dashboard.server:app#forgeone.control_room.server:app#' \
+    /etc/systemd/system/forgeone-dashboard.service
+systemctl daemon-reload &amp;&amp; systemctl restart forgeone-dashboard
+docker compose up -d                                      # migrations folder is now mounted
+forgeone db migrate
+
+# VoyagerOne: its own deploy key and checkout next to ForgeOne
+ssh-keygen -t ed25519 -f ~/.ssh/voyagerone -N "" -C "diskreta18-voyagerone"
+#   add ~/.ssh/voyagerone.pub to VoyagerOne → Settings → Deploy keys, with write access
+#   add Host github-voyagerone to ~/.ssh/config (IdentityFile ~/.ssh/voyagerone)
+cd ~ &amp;&amp; git clone git@github-voyagerone:jonamvanuden/VoyagerOne.git
+forgeone agent status voyagerone</code></pre>
+<p>Day to day, a change from GitHub is deployed with <code>git pull &amp;&amp; pip install -e . -q &amp;&amp; systemctl restart forgeone-dashboard</code>; <code>docs/OPERATIONS.md</code> has the full cheat sheet.</p>
+
+<!-- ============================================================ 11 -->
+<h2><span class="chap">11</span>What comes next</h2>
+<ol>
+  <li><strong>tools/</strong>: Playwright browser tools on a dedicated thread, recording full page text for the quote check.</li>
+  <li><strong>runtime/</strong>: one generic agent loop that runs a spec and returns an <code>AgentTrace</code>.</li>
+  <li><strong>evals/runner.py</strong>: run VoyagerOne's suite three times per case, store results in <code>eval_results</code>, compute the scorecard.</li>
+  <li><strong>The first real numbers</strong>: VoyagerOne's first scorecard, and a Quality page in the Control Room.</li>
+  <li><strong>judges/</strong> and the test, judge and repair loop in the builder, closing the feedback loop from Day 1.</li>
+</ol>
+
+</article>
+</body>
+</html>

@@ -515,9 +515,12 @@ const dayBadge = (m, i) => {
   return `<span class="day" aria-hidden="true">DAY<b>${esc(num)}</b></span>`;
 };
 
+const fmtBytes = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+
 async function viewDocs() {
-  const docs = await api("/docs/index.json");
-  const data = JSON.stringify(docs);
+  const all = await api("/api/docs");
+  const docs = all.days;
+  const data = JSON.stringify(all);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
   setCrumbs([{ label: "Overview", href: "#/" }, { label: "Project docs" }]);
@@ -537,13 +540,20 @@ async function viewDocs() {
   }
   main.innerHTML = `
     <div class="page-head"><div><h1>Project docs</h1><p>How ForgeOne is built and why: one document per working day, readable here and as PDF.</p></div></div>
-    ${panel("Documents", `${docs.length} ${docs.length === 1 ? "document" : "documents"}`, `<ul class="doc-list">${list}</ul>`)}
+    ${panel("Day by day", `${docs.length} ${docs.length === 1 ? "document" : "documents"}`, `<ul class="doc-list">${list}</ul>`)}
+    ${all.files.length ? panel("Other documents", "every file in docs/", `<ul class="doc-list">${all.files
+      .map((f) => `<li class="doc-item"><span class="day file" aria-hidden="true">${esc(f.name.split(".").pop().toUpperCase().slice(0, 4))}</span>
+        <div><h3><a href="${esc(f.url)}" download>${esc(f.title)}</a></h3>
+          <p class="muted">${esc(f.name)}, ${esc(f.kind)}, ${esc(fmtBytes(f.bytes))}, updated ${esc(ago(f.modified))}</p></div>
+        <div class="doc-actions"><a class="btn" href="${esc(f.url)}" target="_blank" rel="noopener">Open</a>
+          <a class="btn primary" href="${esc(f.url)}" download>${DOWNLOAD}Download</a></div></li>`)
+      .join("")}</ul>`) : ""}
     ${figures ? `<div class="page-head" style="margin:36px 0 16px"><div><h1 style="font-size:20px">Architecture at a glance</h1><p>The diagrams from the latest document.</p></div></div><div class="fig-grid">${figures}</div>` : ""}`;
   return true;
 }
 
 async function viewDoc(slug) {
-  const docs = await api("/docs/index.json");
+  const docs = (await api("/api/docs")).days;
   const meta = docs.find((d) => d.slug === slug);
   if (!meta) throw new Error("Document not found");
   if (state.lastJSON === `doc:${slug}`) return false;
