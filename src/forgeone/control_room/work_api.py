@@ -9,6 +9,7 @@ from starlette.requests import Request
 from ..config import settings
 from ..work.model import FAILURE_REASONS, GoalTree, Task
 from ..work.store import NotFound, PgStore
+from ..work.support import analyze
 from ..work.views import current_milestone, progress, stage_states, waiting_on_you
 
 KINDS = ["plan", "execute", "verify", "edge_test", "approve"]
@@ -153,3 +154,13 @@ def api_work_task(request: Request):
         "last_verdict": verdicts[-1].criteria if verdicts else None,
         "waiting": waiting.model_dump(include={"id", "started_at", "input"}) if waiting else None,
     }
+
+
+def api_support(request: Request) -> dict:
+    trees = _trees()
+    if trees is None:
+        return {"migrated": False}
+    raw = request.query_params.get("days", "30")
+    days = None if raw == "all" else int(raw) if raw in ("7", "30", "90") else 30
+    scope = "builds" if request.query_params.get("scope") == "builds" else "all"
+    return {"migrated": True, **analyze(trees, days, scope)}

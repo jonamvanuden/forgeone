@@ -21,6 +21,7 @@ Goal ──► Milestones (1..10, each with "done when")
 | `playbooks.py` | Fixed plans for known processes (e.g. `build_agent` in builder/playbook.py) and their code steps |
 | `approvals.py` | `forgeone approve` / `reject`, for sign-offs and go-aheads |
 | `store.py` | Postgres (migration 004) and an in-memory store for tests |
+| `support.py` | Read-only analysis for the Support page and `forgeone support`: failures, harder than planned, planner calibration, what might not need AI, what the AI checks missed |
 
 Policy, first version:
 

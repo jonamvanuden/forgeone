@@ -125,3 +125,17 @@ your approval at every milestone; autonomous goals get an AI approver and may re
 The knowledge views of migration 004 turn this into routing data: `v_stage_knowledge` (pass rate and
 cost per task type × stage × model), `v_task_calibration` (predicted vs. actual difficulty, cost and
 time per task type) and `v_failure_reasons`.
+
+## Support: where the system tells you what to improve
+`work/support.py` reads the goal records (never a model) and answers four questions, shown on the
+Control Room's Support page and by `forgeone support`:
+
+| Question | Signal |
+|---|---|
+| What failed? | failed and blocked tasks, with the last verdict and the next step |
+| What goes wrong most? | failed actions by failure reason, split into infrastructure (tool, model, timeout, budget) and quality |
+| What was harder than planned? | retries, rejections, cost over twice the estimate; predicted vs. actual difficulty per task type |
+| What might not need AI? | tasks the planner marked `automatable` (with how), tasks that repeat 3+ times and always pass first try, AI checks with 5+ runs that never caught anything |
+
+Plus "missed by the AI checks": work you rejected although the AI verify, edge test or approval had
+passed it. That is the most direct measure of how much the AI reviewers can be trusted.

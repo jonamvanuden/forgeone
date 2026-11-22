@@ -53,7 +53,8 @@ def tasks_from(drafts: list[TaskDraft], goal: Goal, milestone: Milestone, has_ag
                  difficulty=min(d.difficulty, 4) if parent else d.difficulty, risk=d.risk, reversible=d.reversible,
                  acceptance_criteria=[c for c in d.acceptance_criteria if c.strip()][:5],
                  depends_on=deps, input=d.input, expected_output=d.expected_output,
-                 est_steps=max(1, d.est_steps), est_minutes=max(0.1, d.est_minutes))
+                 est_steps=max(1, d.est_steps), est_minutes=max(0.1, d.est_minutes),
+                 automatable=bool(d.automatable), automation_hint=(d.automation_hint or "").strip() if d.automatable else "")
         out.append(prepare(t, goal, has_agent))
     if not out:
         raise ValueError(f"the planner returned no tasks for {milestone.title!r}")

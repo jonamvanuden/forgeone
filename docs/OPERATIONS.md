@@ -5,7 +5,7 @@ All commands from `~/ForgeOne` with the venv active: `source .venv/bin/activate`
 ## Deploy a change from GitHub
 ```bash
 cd ~/ForgeOne && git pull && pip install -e . -q && systemctl restart forgeone-dashboard
-forgeone db migrate                       # only needed when a migration was added; always safe (004 = goals)
+forgeone db migrate                       # only needed when a migration was added; always safe (004 goals, 005 playbooks, 006 automatable)
 ```
 
 ## Agent repositories
@@ -48,6 +48,9 @@ forgeone goal replan G-xxxxxx --reason "M3 was the wrong approach"
 forgeone goal budget G-xxxxxx 2.50         # raise the budget of a paused goal, then goal run again
 forgeone goal cancel G-xxxxxx
 ```
+`forgeone support [--days 7|30|90|all] [--builds]`: what failed, what goes wrong most, what was harder than
+planned, and what might not need AI. The same as the Support page in the Control Room.
+
 Supervised (default): you approve each milestone, plus every high-risk task. Autonomous: an AI
 approver signs off milestones and the goal may replan itself twice. Without `--agent` there is no web
 access: tasks are done by plain model calls. Approvals never continue the goal by themselves: run

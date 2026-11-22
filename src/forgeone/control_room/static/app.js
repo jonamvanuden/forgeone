@@ -520,7 +520,7 @@ const KIND_TEXT = { plan: "Plan", execute: "Execute", verify: "Verify", edge_tes
 const ms = (m) => `M${m.seq}`;
 
 function cmd(text) {
-  return `<span class="cmd"><code>${esc(text)}</code><button type="button" class="copy" data-copy="${esc(text)}">Copy</button></span>`;
+  return `<span class="cmd"><code title="${esc(text)}">${esc(text)}</code><button type="button" class="copy" data-copy="${esc(text)}">Copy</button></span>`;
 }
 function stagePills(stages, container) {
   if (container) return `<span class="muted" style="font-size:12.5px">split into subtasks</span>`;
@@ -808,6 +808,146 @@ async function viewTask(id) {
   return true;
 }
 
+/* ---------------- support: what went wrong, what was hard, what might not need AI ---------------- */
+const pctTxt = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`);
+const taskLink = (r) => `<a class="row-link" href="#/t/${esc(r.id)}"><span class="tcode">${esc(r.code)}</span> ${esc(r.title)}</a>
+  <div class="muted sub-goal"><a href="#/g/${esc(r.goal_id)}">${esc(r.goal)}</a>${r.agent_type === "builder" ? ' <span class="chip">build</span>' : ""}</div>`;
+const reasonChip = (r, kind) => `<span class="chip ${kind === "infrastructure" ? "infra" : "bad"}">${esc(r || "unknown")}</span>`;
+const STAGE_NAME = { plan: "planning", execute: "execute", verify: "verify", edge_test: "edge test", approve: "approve" };
+
+function supportFilters(days, scope) {
+  const seg = (label, d, s, on) => `<a class="seg-btn${on ? " on" : ""}" href="#/support?days=${d}&scope=${s}">${label}</a>`;
+  return `<div class="sfilters">
+    <div class="seg-group" role="group" aria-label="Period">${[["7", "7 days"], ["30", "30 days"], ["90", "90 days"], ["all", "All time"]].map(([d, l]) => seg(l, d, scope, d === days)).join("")}</div>
+    <div class="seg-group" role="group" aria-label="Which goals">${seg("All goals", days, "all", scope === "all")}${seg("Builds only", days, "builds", scope === "builds")}</div>
+  </div>`;
+}
+
+function failedTable(rows) {
+  if (!rows.length) return `<div class="empty">Nothing failed in this period.</div>`;
+  return `<div class="scroll-x"><table class="table support">
+    <thead><tr><th class="hide-sm">When</th><th>Task</th><th>Why</th><th class="r hide-sm">Tries</th><th class="r hide-sm">Cost</th><th class="hide-sm">Next step</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr class="${r.replaced ? "replaced" : ""}">
+      <td class="hide-sm nowrap muted">${esc(ago(r.when))}</td>
+      <td class="task">${taskLink(r)}${r.replaced ? '<div class="muted" style="font-size:12px">replaced by a newer plan</div>' : ""}</td>
+      <td>${status(r.status === "superseded" ? "failed" : r.status)} ${reasonChip(r.failure_reason)}
+        <div class="why-text">${esc((r.detail || r.means || "").slice(0, 220))}</div>
+        ${r.last_feedback ? `<div class="muted" style="font-size:12px">asked: ${esc(r.last_feedback.slice(0, 160))}</div>` : ""}</td>
+      <td class="r hide-sm">${fmtInt(r.attempts)}</td>
+      <td class="r hide-sm">${esc(fmtUSD(r.cost_usd))}</td>
+      <td class="hide-sm next">${r.next.startsWith("forgeone") ? cmd(r.next) : `<span class="muted">${esc(r.next)}</span>`}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function wrongList(rows) {
+  if (!rows.length) return `<div class="empty">No failed actions in this period.</div>`;
+  const max = Math.max(...rows.map((r) => r.n), 1);
+  return `<ul class="wrong">${rows.map((r) => `<li>
+    <div class="wrong-head">${reasonChip(r.reason, r.kind)}<span class="kind ${esc(r.kind)}">${esc(r.kind)}</span><b>${fmtInt(r.n)}</b><span class="muted">${pctTxt(r.share)}</span></div>
+    <span class="hbar ${r.kind === "infrastructure" ? "infra" : "bad"}"><i style="width:${Math.round((r.n / max) * 100)}%"></i></span>
+    <div class="muted">${esc(r.means)}. In ${Object.entries(r.stages).map(([k, v]) => `${esc(STAGE_NAME[k] || k)} ${fmtInt(v)}×`).join(", ")}.</div>
+    ${r.example ? `<div class="example">Latest: ${r.example.id ? `<a href="#/t/${esc(r.example.id)}">${esc(r.example.code)} ${esc(r.example.title)}</a>` : esc(r.example.goal)}${r.example.text ? `: ${esc(r.example.text.slice(0, 140))}` : ""}</div>` : ""}
+  </li>`).join("")}</ul>`;
+}
+
+function calibrationTable(rows) {
+  if (!rows.length) return `<div class="empty">No finished tasks in this period.</div>`;
+  return `<div class="scroll-x"><table class="table">
+    <thead><tr><th>Task type</th><th class="r">Tasks</th><th class="r">Difficulty</th><th class="r hide-sm">First try</th><th class="r hide-sm">Cost</th><th>Verdict</th></tr></thead>
+    <tbody>${rows.map((c) => `<tr><td><span class="chip">${esc(c.type)}</span></td><td class="r">${fmtInt(c.tasks)}</td>
+      <td class="r nowrap">${esc(c.predicted)} <span class="arrow">→</span> <b>${esc(c.actual)}</b></td>
+      <td class="r hide-sm">${pctTxt(c.first_try)}</td>
+      <td class="r hide-sm nowrap">${esc(fmtUSD(c.est_cost_usd))} <span class="arrow">→</span> ${esc(fmtUSD(c.cost_usd))}</td>
+      <td><span class="verdict ${c.verdict.startsWith("harder") ? "bad" : c.verdict.startsWith("easier") ? "good" : ""}">${esc(c.verdict)}</span></td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function hardTable(rows) {
+  if (!rows.length) return `<div class="empty">Every finished task went as planned in this period.</div>`;
+  return `<div class="scroll-x"><table class="table support">
+    <thead><tr><th>Task</th><th class="r">Difficulty</th><th class="r hide-sm">Tries</th><th class="r hide-sm">Rejected</th><th class="r hide-sm">Cost</th><th>What made it hard</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><td>${taskLink(r)}</td>
+      <td class="r nowrap">${esc(r.difficulty)} <span class="arrow">→</span> <b>${esc(r.actual ?? "–")}</b></td>
+      <td class="r hide-sm">${fmtInt(r.attempts)}</td><td class="r hide-sm">${fmtInt(r.rejections)}</td>
+      <td class="r hide-sm nowrap">${esc(fmtUSD(r.cost_usd))}${r.cost_ratio ? `<div class="muted" style="font-size:12px">${esc(r.cost_ratio)}× estimate</div>` : ""}</td>
+      <td class="why-text">${esc((r.why || "needed more than one attempt").slice(0, 200))}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function withoutAI(w) {
+  const block = (title, hint, body) => `<div class="noai-block"><h3>${esc(title)}</h3><p class="muted">${hint}</p>${body}</div>`;
+  const flagged = w.flagged.length ? `<ul class="noai">${w.flagged.map((r) => `<li><div>${taskLink(r)}</div>
+      <div class="noai-hint">${esc(r.hint || "no hint given")}</div>
+      <div class="noai-cost">${r.runs > 1 ? `${fmtInt(r.runs)} times in ${fmtInt(r.goals)} goals, ` : ""}${esc(fmtUSD(r.cost_usd))} on AI so far</div></li>`).join("")}</ul>`
+    : `<div class="empty small">None marked.</div>`;
+  const repeated = w.repeated.length ? `<ul class="noai">${w.repeated.map((r) => `<li><div>${taskLink(r)}</div>
+      <div class="noai-hint">${fmtInt(r.runs)} runs in ${fmtInt(r.goals)} ${r.goals === 1 ? "goal" : "goals"}, always first try, actual difficulty ${esc(r.actual)}</div>
+      <div class="noai-cost">${esc(fmtUSD(r.cost_usd))} on AI</div></li>`).join("")}</ul>`
+    : `<div class="empty small">Nothing repeats often enough yet (3 runs needed).</div>`;
+  const idle = w.idle_checks.length ? `<ul class="noai">${w.idle_checks.map((c) => `<li><div>${checkName(c)}</div>
+      <div class="noai-hint">${fmtInt(c.runs)} runs, caught nothing. Replace it with an automatic check, or drop the stage for this task type.</div>
+      <div class="noai-cost">${esc(fmtUSD(c.cost_usd))} spent</div></li>`).join("")}</ul>`
+    : `<div class="empty small">Every AI check with 5 or more runs has caught something.</div>`;
+  return `<div class="noai-grid">
+    ${block("Marked by the planner", "The planner thinks plain code could do these: a calculation, a conversion, a fixed lookup.", flagged)}
+    ${block("Repeats and is always easy", "The same kind of task, over and over, right on the first try: a candidate for a code step or a playbook.", repeated)}
+    ${block("AI checks that never caught anything", "A check that never fails costs money without protecting anything.", idle)}
+  </div>`;
+}
+
+function missedList(rows) {
+  if (!rows.length) return `<div class="empty">You have not rejected anything that the AI checks had passed.</div>`;
+  return `<ul class="noai">${rows.map((r) => `<li><div>${taskLink(r)}</div>
+    <div class="noai-hint">You: "${esc(r.note || "")}"</div>
+    <div class="noai-cost">passed by ${r.passed_by.map((k) => `<span class="chip">${esc(STAGE_NAME[k] || k)}</span>`).join(" ")}</div></li>`).join("")}</ul>`;
+}
+
+const checkName = (c) => (c.type === "milestone" ? `<b>AI approval</b> of milestones`
+  : `<b>${esc(STAGE_NAME[c.stage] || c.stage)}</b> on <span class="chip">${esc(c.type)}</span> tasks`);
+
+function checkStats(rows) {
+  if (!rows.length) return `<div class="empty">No AI checks ran in this period.</div>`;
+  return `<div class="scroll-x"><table class="table">
+    <thead><tr><th>Check</th><th>On</th><th class="r">Runs</th><th class="r">Caught</th><th class="r">Catch rate</th><th class="r hide-sm">Cost</th></tr></thead>
+    <tbody>${rows.map((c) => `<tr><td class="nowrap">${esc(c.type === "milestone" ? "AI approval" : STAGE_NAME[c.stage] || c.stage)}</td><td>${c.type === "milestone" ? "milestones" : `<span class="chip">${esc(c.type)}</span>`}</td>
+      <td class="r">${fmtInt(c.runs)}</td><td class="r">${fmtInt(c.caught)}</td><td class="r">${pctTxt(c.catch_rate)}</td><td class="r hide-sm">${esc(fmtUSD(c.cost_usd))}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+async function viewSupport(q) {
+  const days = ["7", "30", "90", "all"].includes(q.get("days")) ? q.get("days") : "30";
+  const scope = q.get("scope") === "builds" ? "builds" : "all";
+  const s = await api(`/api/support?days=${days}&scope=${scope}`);
+  const data = JSON.stringify(s);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  setCrumbs([{ label: "Home", href: "#/" }, { label: "Support" }]);
+  if (!s.migrated) { main.innerHTML = notMigrated("Support"); return true; }
+  const k = s.kpis;
+  const kpi = (label, value, foot, cls = "") => `<div class="panel kpi ${cls}"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
+  const period = days === "all" ? "all time" : `the last ${days} days`;
+  main.innerHTML = `
+    <div class="page-head"><div><h1>Support</h1>
+      <p>What went wrong or was harder than planned while ForgeOne worked on ${scope === "builds" ? "builds" : "goals"} in ${period}, and work that might not need AI at all. Everything here is counted from the recorded attempts, not estimated.</p></div>
+      ${supportFilters(days, scope)}</div>
+    ${n(s.errors_24h) ? `<div class="notice bad"><b>${fmtInt(s.errors_24h)} ${s.errors_24h === 1 ? "run" : "runs"} crashed in the last 24 hours.</b> <a href="#/errors">Open Errors</a> for the tracebacks.</div>` : ""}
+    <div class="grid g-kpi">
+      ${kpi("Failed tasks", fmtInt(k.failed), k.replaced ? `${fmtInt(k.replaced)} more replaced by a replan` : "failed or blocked", k.failed ? "bad" : "")}
+      ${kpi("Needed a retry", pctTxt(k.retry_rate), `${fmtInt(k.retried)} of ${fmtInt(k.closed)} finished tasks`)}
+      ${kpi("Harder than planned", fmtInt(k.harder), "finished, but took more")}
+      ${kpi("Spent on failed attempts", esc(fmtUSD(k.wasted_usd)), `of ${esc(fmtUSD(k.spent_usd))} in total${k.spent_usd ? `, ${pctTxt(k.wasted_usd / k.spent_usd)}` : ""}`)}
+      ${kpi("Might not need AI", fmtInt(k.without_ai), "candidates, see below")}
+    </div>
+    ${panel(`Failed and blocked (${s.failed.length})`, "newest first; click a task for every attempt", failedTable(s.failed))}
+    <div class="grid g-1-1">
+      ${panel("What goes wrong", "failed actions by reason", `<div class="panel-body">${wrongList(s.what_goes_wrong)}</div>`)}
+      ${panel("How good is the planner", "predicted vs. actual, per task type", calibrationTable(s.calibration))}
+    </div>
+    ${panel(`Harder than planned (${s.hard.length})`, "finished tasks that needed retries, got rejected or cost over twice the estimate", hardTable(s.hard))}
+    ${panel("Might run without AI", "cheaper and more reliable as plain code", `<div class="panel-body">${withoutAI(s.without_ai)}</div>`)}
+    <div class="grid g-1-1">
+      ${panel(`Missed by the AI checks (${s.missed.length})`, "you rejected work the AI checks had passed", `<div class="panel-body">${missedList(s.missed)}</div>`)}
+      ${panel("What each AI check is worth", "how often it catches a problem", checkStats(s.check_stats))}
+    </div>`;
+  return true;
+}
+
 /* ---------------- quality: evals, knowledge, labels ---------------- */
 const labelChip = (label, source) =>
   label ? `<span class="status ${label === "good" ? "ok" : "error"}">${label === "good" ? "Good" : "Bad"}${source === "checks" ? ", by checks" : ""}</span>` : `<span class="muted">unlabelled</span>`;
@@ -1029,7 +1169,9 @@ function closeSheet(navigate = true) {
 
 /* ---------------- router ---------------- */
 function parse() {
-  const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
+  const parts = path.split("/").map(decodeURIComponent);
+  if (parts[0] === "support") return { name: "support", id: query, q: new URLSearchParams(query), nav: "support" };
   if (parts[0] === "g" && parts[1]) return { name: "wgoal", id: parts[1], nav: "work" };
   if (parts[0] === "t" && parts[1]) return { name: "wtask", id: parts[1], nav: "work" };
   if (parts[0] === "inbox") return { name: "inbox", nav: "inbox" };
@@ -1058,6 +1200,7 @@ async function render({ quiet = false } = {}) {
     else if (route.name === "wgoal") await viewWorkGoal(route.id);
     else if (route.name === "wtask") await viewTask(route.id);
     else if (route.name === "inbox") await viewInbox();
+    else if (route.name === "support") await viewSupport(route.q);
     else if (route.name === "quality") await viewQuality();
     else if (route.name === "docs") await viewDocs();
     else if (route.name === "doc") await viewDoc(route.id);

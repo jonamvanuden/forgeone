@@ -368,6 +368,8 @@ routes = [
     Route("/api/work", lambda r: JSON(work_api.api_work(r))),
     Route("/api/work/goals/{goal_id}", lambda r: JSON(work_api.api_work_goal(r))),
     Route("/api/work/tasks/{task_id}", lambda r: JSON(work_api.api_work_task(r))),
+    Route("/api/support", lambda r: JSON({**work_api.api_support(r),
+                                          "errors_24h": _safe(lambda: db.one(db.OVERVIEW)["errors_24h"], 0)})),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
     Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
     Route("/", index),

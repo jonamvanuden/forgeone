@@ -21,7 +21,7 @@
     <li><strong>Every task is checked before it counts.</strong> Depending on its risk, it goes through execute, verify, edge test and approve. A failed check sends its feedback into the next attempt.</li>
     <li><strong>Nothing irreversible happens without you.</strong> Work that cannot be undone waits for your go-ahead before it runs.</li>
     <li><strong>Building an agent is now a goal too</strong>, with a fixed plan (a playbook) and hard checks on the spec.</li>
-    <li>The Control Room opens on <strong>Goals</strong>, with a <strong>Needs you</strong> inbox. The old overview moved to <strong>Builds</strong>.</li>
+    <li>The Control Room opens on <strong>Goals</strong>, with a <strong>Needs you</strong> inbox and a <strong>Support</strong> page for everything that went wrong or might not need AI. The old overview moved to <strong>Builds</strong>.</li>
   </ul>
 </div>
 
@@ -576,6 +576,7 @@ forgeone goal run G-xxxxxx             # continue: an approval never restarts th
     <tr><td><strong>Needs you</strong></td><td>Every approval and go-ahead waiting, and every goal that stopped, each with the command to copy. The badge in the menu counts them.</td></tr>
     <tr><td><strong>A goal</strong></td><td>The milestones as a roadmap with their tasks. Each task shows its stage blocks <strong>E V T A</strong> in colour: green passed, red failed, orange waiting for you, grey not reached. Round blocks are go-aheads. Below: where the money went per stage, what went wrong, and the plan history.</td></tr>
     <tr><td><strong>A task</strong></td><td>What to do, the criteria with ✓ or ✗ from the last check, what it depends on, the accepted output, and the full activity: every attempt with verdict, confidence, feedback, the output of that attempt and a link to its model calls.</td></tr>
+    <tr><td><strong>Support</strong></td><td>What needs improving: failed and blocked tasks with the next step, what goes wrong most (infrastructure or quality), tasks that were harder than planned, how well the planner predicts per task type, work that might not need AI (marked by the planner, repeating and always easy, AI checks that never caught anything), and work you rejected after the AI checks had passed it. Filter by period and by builds only. Also in the terminal: <code>forgeone support</code>.</td></tr>
     <tr><td><strong>Builds</strong></td><td>The former overview: builds per day, spend, spec versions. A build links to its goal.</td></tr>
     <tr><td><strong>Quality</strong></td><td>The knowledge matrix of the eval suite: pass rate and cost per task category and variant, with the best safe choice per category, and your labels on real runs.</td></tr>
   </tbody>
@@ -656,6 +657,7 @@ forgeone eval report</code></pre>
   <li><strong>Test and repair in the build.</strong> Add a milestone that runs the new spec on its own test cases; when they fail, send the failure back to the spec task as feedback.</li>
   <li><strong>Goals in the background.</strong> Today <code>goal run</code> runs in your terminal. A worker service will pick up goals by itself, with a lock so one goal never runs twice at the same time (that is not prevented yet).</li>
   <li><strong>Approving in the dashboard</strong>, once the Control Room has a login.</li>
+  <li><strong>Act on the Support page.</strong> Turn tasks marked "might not need AI" into code steps, and drop or replace AI checks that never catch anything.</li>
 </ol>
 
 </article>

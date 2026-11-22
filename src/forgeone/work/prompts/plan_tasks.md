@@ -34,3 +34,4 @@ Done when:
 - input: what the task starts from. expected_output: what it must deliver, format and content.
 - est_steps: how many tool calls or model turns you expect. est_minutes: expected wall time.
 - Together the tasks must make every "done when" statement of the milestone true.
+- automatable: true only if plain code could do this reliably without a model: a calculation, a unit conversion, reformatting data that is already there, fetching a fixed URL, a lookup or filter on existing data. automation_hint: how, in one sentence. False and empty for anything that needs judgment, reading or writing.

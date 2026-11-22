@@ -32,6 +32,8 @@ class TaskDraft(BaseModel):
     expected_output: str
     est_steps: int = Field(description="expected tool calls or model turns")
     est_minutes: float
+    automatable: bool = Field(default=False, description="plain code could do this reliably, without a model")
+    automation_hint: str = Field(default="", description="how code could do it, in one sentence; empty if not automatable")
 
 
 class TaskPlan(BaseModel):

@@ -14,6 +14,7 @@
     forgeone goal list | show ID | run ID [--max-tasks N] | replan ID --reason TEXT | budget ID USD | cancel ID
     forgeone approve ID [--note TEXT]        (a task, a milestone, or a goal with one approval waiting)
     forgeone reject ID --note TEXT
+    forgeone support [--days 7|30|90|all] [--builds]
     forgeone control-room [--port 8501]
 """
 from __future__ import annotations
@@ -305,6 +306,54 @@ def _goal(a):
         print(f"{g.id}: {g.status}, budget {_usd(g.budget_usd)}")
 
 
+def _support(a):
+    from .work.support import analyze
+
+    store, _ = _work()
+    days = None if a.days == "all" else int(a.days)
+    r = analyze([store.load(g.id) for g in store.goals()], days, "builds" if a.builds else "all")
+    k = r["kpis"]
+    pct = lambda v: "–" if v is None else f"{round(v * 100)}%"  # noqa: E731
+    print(f"\nSupport, {'all time' if days is None else f'last {days} days'}, {'builds' if a.builds else 'all goals'}"
+          f" ({r['goals']} goals)")
+    print(f"  failed tasks {k['failed']} (+{k['replaced']} replaced)   retried {pct(k['retry_rate'])} of {k['closed']}"
+          f"   harder than planned {k['harder']}   spent on failed attempts {_usd(k['wasted_usd'])} of {_usd(k['spent_usd'])}"
+          f"   might not need AI {k['without_ai']}")
+    if r["failed"]:
+        print("\n  Failed and blocked")
+        for x in r["failed"][:15]:
+            print(f"    {x['code']:<7}{x['title'][:40]:<41}{(x['failure_reason'] or ''):<20}{x['id']}  {x['goal'][:30]}")
+            if x["detail"]:
+                print(f"           {x['detail'][:110]}")
+    if r["what_goes_wrong"]:
+        print("\n  What goes wrong")
+        for x in r["what_goes_wrong"]:
+            print(f"    {x['n']:>4}  {x['reason']:<20}{x['kind']:<16}{x['means']}")
+    if r["calibration"]:
+        print("\n  Planner: predicted -> actual difficulty")
+        for c in r["calibration"]:
+            print(f"    {c['type']:<10}{c['tasks']:>4} tasks  {c['predicted']} -> {c['actual']}  first try {pct(c['first_try'])}  {c['verdict']}")
+    if r["hard"]:
+        print("\n  Harder than planned")
+        for x in r["hard"][:10]:
+            print(f"    {x['code']:<7}{x['title'][:40]:<41}d{x['difficulty']}->{x['actual']}  tries {x['attempts']}  {(x['why'] or '')[:60]}")
+    w = r["without_ai"]
+    if w["flagged"] or w["repeated"] or w["idle_checks"]:
+        print("\n  Might run without AI")
+        for x in w["flagged"][:10]:
+            print(f"    planner: {x['title'][:50]:<51}{x['runs']}x  {x['hint'][:60]}")
+        for x in w["repeated"][:10]:
+            print(f"    repeats: {x['title'][:50]:<51}{x['runs']} runs, always first try")
+        for c in w["idle_checks"]:
+            what = "AI approval of milestones" if c["type"] == "milestone" else f"{c['stage']} on {c['type']} tasks"
+            print(f"    check:   {what}: {c['runs']} runs, caught nothing, {_usd(c['cost_usd'])}")
+    if r["missed"]:
+        print("\n  Missed by the AI checks (you rejected what they passed)")
+        for x in r["missed"][:10]:
+            print(f"    {x['code']:<7}{x['title'][:40]:<41}\"{(x['note'] or '')[:60]}\"")
+    print()
+
+
 def _decide(a):
     from .work import decide
 
@@ -377,6 +426,11 @@ def main(argv: list[str] | None = None) -> None:
     go.add_argument("--reason", default=None, help="why you replan")
     go.add_argument("--actions", action="store_true", help="show: list every action")
     go.set_defaults(fn=_goal)
+
+    su = sub.add_parser("support", help="what failed, what was harder than planned, what might not need AI")
+    su.add_argument("--days", default="30", choices=["7", "30", "90", "all"])
+    su.add_argument("--builds", action="store_true", help="only builds")
+    su.set_defaults(fn=_support)
 
     for name, hlp in (("approve", "approve a task or milestone that waits for you"),
                       ("reject", "reject it, with a note on what must change")):

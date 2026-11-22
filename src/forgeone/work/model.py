@@ -142,6 +142,8 @@ class Task(BaseModel):
     est_steps: int | None = None
     est_minutes: float | None = None
     est_cost_usd: float | None = None
+    automatable: bool = False                # the planner thinks plain code could do it
+    automation_hint: str = ""
     # -- outcome (filled while running)
     status: TaskStatus = "pending"
     attempts: int = 0
