@@ -169,6 +169,8 @@ def api_run(request: Request):
     run["events"] = db.query(db.RUN_EVENTS, {"run_id": run_id})
     name = run.get("name") or ""
     run["kind"] = "agent" if name == "agent.run" else "work" if name.startswith("goal.") else "build"
+    if run["kind"] == "build":
+        run["goal_id"] = (run.get("meta") or {}).get("goal_id")    # builds run as goals since the build playbook
     if run["kind"] == "work":
         meta = run.get("meta") or {}
         run["title"] = meta.get("title") or "Goal"

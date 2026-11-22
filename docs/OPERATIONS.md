@@ -22,7 +22,10 @@ A build needs the agent repo on a clean `main`. ForgeOne pulls it, builds, and p
 
 ## ForgeOne
 ```bash
-forgeone build --agent voyagerone         # build + publish to VoyagerOne (old: python -m forgeone.graph)
+forgeone build --agent voyagerone         # build as a goal: design -> spec -> publish branch (shows under Goals and Builds)
+forgeone build --publish main             # stops for your go-ahead before committing to main: forgeone approve T-...
+forgeone build --budget 0.20              # stop when the build has cost this much
+forgeone build --legacy                   # the original two-node LangGraph build
 forgeone eval validate --agent voyagerone # check the eval suite
 forgeone eval checks                      # list programmatic checks (HARD = gate)
 forgeone db status                        # row counts + latest runs

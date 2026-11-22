@@ -21,7 +21,9 @@ TaskType = Literal["research", "read", "extract", "analyze", "write", "code", "r
 Risk = Literal["low", "medium", "high"]
 Stage = Literal["execute", "verify", "edge_test", "approve"]
 ActionKind = Literal["plan", "execute", "verify", "edge_test", "approve"]
-Executor = Literal["agent", "llm", "none"]
+Executor = Literal["agent", "llm", "step", "none"]   # step: a registered function of a playbook
+Verifier = Literal["model", "checks"]                 # checks: decided by automatic checks only
+Approval = Literal["human", "ai", "none"]
 ActorType = Literal["ai", "human", "tool"]
 FailureReason = Literal["tool_error", "wrong_source", "criteria_not_met", "budget_exceeded", "hallucination",
                         "blocked_dependency", "timeout", "rejected", "model_error", "other"]
@@ -76,6 +78,8 @@ class Goal(BaseModel):
     budget_usd: float | None = None
     deadline: datetime | None = None
     autonomy: Autonomy = "supervised"
+    playbook: str | None = None              # fixed plan for a known process (e.g. build_agent); None: planner model
+    playbook_args: dict = {}
     status: GoalStatus = "planned"
     note: str | None = None                  # why it waits, pauses or failed
     plan_version: int = 0
@@ -94,6 +98,7 @@ class Milestone(BaseModel):
     title: str
     description: str = ""
     done_when: list[str] = []
+    approval: Approval | None = None         # None: decided by the goal's autonomy
     status: MilestoneStatus = "pending"
     note: str | None = None
     cost_usd: float = 0.0
@@ -125,6 +130,8 @@ class Task(BaseModel):
     expected_output: str = ""
     # -- how (routing + policy, planning time)
     executor: Executor = "llm"
+    step: str | None = None                  # for executor "step": the playbook function that does the work
+    verifier: Verifier = "model"
     model: str | None = None
     routing_reason: str = ""
     stages: list[Stage] = []                 # empty for a container task with subtasks

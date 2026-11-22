@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 from .model import GoalTree, Task
+from .policy import is_gate
 
 
 def stage_states(tree: GoalTree, t: Task) -> list[dict]:
     """State of each stage in the task's latest attempt: passed | failed | pending | running | none."""
-    acts = [a for a in tree.actions_of(t.id) if a.attempt == t.attempts]
+    every = tree.actions_of(t.id)
+    gates = [a for a in every if a.input.get("gate")]
+    acts = [a for a in every if a.attempt == t.attempts and not a.input.get("gate")]
     out = []
     for s in t.stages:
-        mine = [a for a in acts if a.kind == s]
+        mine = gates if s == "approve" and is_gate(t.stages) else [a for a in acts if a.kind == s]
         out.append({"stage": s, "state": mine[-1].status if mine else "none",
+                    "gate": s == "approve" and is_gate(t.stages),
                     "actor": mine[-1].actor if mine else (t.approver if s == "approve" else None)})
     return out
 
@@ -29,7 +33,8 @@ def waiting_on_you(tree: GoalTree) -> list[dict]:
             continue
         if a.task_id:
             t = tree.task(a.task_id)
-            out.append({"kind": "task", "id": t.id, "code": t.code, "title": t.title, "action_id": a.id,
+            out.append({"kind": "gate" if a.input.get("gate") else "task", "id": t.id, "code": t.code,
+                        "title": t.title, "action_id": a.id,
                         "since": a.started_at, "risk": t.risk, "goal_id": tree.goal.id, "goal": tree.goal.title})
         else:
             m = tree.milestone(a.milestone_id)

@@ -458,7 +458,8 @@ async function viewRun(runId, callId) {
       <section class="panel hero">
         <div class="hero-top"><div><h1 class="goal">${isAgent ? esc(r.title) : r.kind === "work" ? `${r.name === "goal.plan" ? "Planning" : "Work session"} of ${esc(fmtDate(r.started_at))}` : `Build of ${esc(fmtDate(r.started_at))}`}</h1>
           <div class="sub">${isAgent ? `${esc(r.agent || "agent")} run, variant ${esc(r.variant || "default")}${r.case_id && r.case_id !== "adhoc" ? `, eval case ${esc(r.case_id)}` : ""}, ${esc(fmtDate(r.started_at))}` : esc(r.title)}</div>
-          <div class="mono">${esc(r.run_id)}</div>${labels ? `<div style="margin-top:10px">${labels}</div>` : ""}</div>
+          <div class="mono">${esc(r.run_id)}</div>${labels ? `<div style="margin-top:10px">${labels}</div>` : ""}
+          ${r.kind === "build" && r.goal_id ? `<div class="sub"><a href="#/g/${esc(r.goal_id)}">Open this build as a goal: tasks, checks and every attempt</a></div>` : ""}</div>
           <div>${status(r.status)}</div></div>
       </section>
       ${r.error ? `<div class="alert" style="margin-top:20px"><b>This ${r.kind === "build" ? "build" : "run"} failed.</b> ${esc(r.error)}</div>` : ""}
@@ -526,7 +527,8 @@ function stagePills(stages, container) {
   return `<span class="stages">${stages.map((s) => {
     const [l, name] = STAGE[s.stage];
     const who = s.stage === "approve" && s.actor ? `, by ${s.actor === "human" ? "you" : s.actor}` : "";
-    return `<span class="stg ${esc(s.state)}" data-tip="${esc(`${name}: ${STAGE_STATE[s.state] || s.state}${who}`)}">${l}</span>`;
+    const what = s.gate ? "Go-ahead before it runs" : name;
+    return `<span class="stg ${esc(s.state)}${s.gate ? " gate" : ""}" data-tip="${esc(`${what}: ${STAGE_STATE[s.state] || s.state}${who}`)}">${l}</span>`;
   }).join("")}</span>`;
 }
 function track(milestones, { big = false } = {}) {
@@ -550,9 +552,9 @@ function nextStep(g) {
 function askList(inbox, attention) {
   const items = [
     ...inbox.map((w) => `<li class="ask">
-      <div class="ask-what"><span class="ask-kind">${w.kind === "task" ? `Approve task ${esc(w.code)}` : `Approve milestone ${esc(w.code)}`}</span>
-        <a href="${w.kind === "task" ? `#/t/${esc(w.id)}` : `#/g/${esc(w.goal_id)}`}"><b>${esc(w.title)}</b></a>
-        <div class="muted">${esc(w.goal)}, waiting ${esc(ago(w.since))}${w.risk === "high" ? ", high risk" : ""}</div></div>
+      <div class="ask-what"><span class="ask-kind">${w.kind === "gate" ? `Go-ahead for task ${esc(w.code)}` : w.kind === "task" ? `Approve task ${esc(w.code)}` : `Approve milestone ${esc(w.code)}`}</span>
+        <a href="${w.kind === "milestone" ? `#/g/${esc(w.goal_id)}` : `#/t/${esc(w.id)}`}"><b>${esc(w.title)}</b></a>
+        <div class="muted">${esc(w.goal)}, waiting ${esc(ago(w.since))}${w.kind === "gate" ? ". Nothing has run yet: it cannot be undone" : w.risk === "high" ? ", high risk" : ""}</div></div>
       <div class="ask-do">${cmd(`forgeone approve ${w.id}`)}${cmd(`forgeone reject ${w.id} --note "..."`)}</div></li>`),
     ...attention.map((a) => `<li class="ask">
       <div class="ask-what"><span class="ask-kind ${a.kind === "failed" ? "bad" : ""}">Goal ${a.kind === "failed" ? "failed" : "paused"}</span>
@@ -698,7 +700,7 @@ async function viewWorkGoal(id) {
     <section class="panel hero">
       <div class="hero-top"><div>
         <h1 class="goal">${esc(g.title)}</h1>
-        <div class="sub">${esc(g.autonomy === "supervised" ? "Supervised: you approve each milestone" : "Autonomous: an AI approver signs off milestones and may replan")}${g.agent ? `. Web work by ${esc(g.agent)}` : ""}. Plan v${esc(g.plan_version)}, created ${esc(fmtDate(g.created_at))}.</div>
+        <div class="sub">${esc(g.playbook ? `Fixed plan from playbook ${g.playbook}: no planner call, milestones are done when their tasks pass` : g.autonomy === "supervised" ? "Supervised: you approve each milestone" : "Autonomous: an AI approver signs off milestones and may replan")}${g.agent ? `. Web work by ${esc(g.agent)}` : ""}. Plan v${esc(g.plan_version)}, created ${esc(fmtDate(g.created_at))}.</div>
         ${g.success_criteria.length ? `<div class="hero-criteria"><span>Done when</span><ul>${g.success_criteria.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
         ${g.description ? `<details><summary>Show the full description</summary><pre>${esc(g.description)}</pre></details>` : ""}
         <div class="mono">${esc(g.id)}</div></div>
@@ -779,14 +781,15 @@ async function viewTask(id) {
         <div>${status(t.status)}</div></div>
       ${container ? "" : `<div class="hero-stages">${stagePills(d.stages, false)}<span>${d.stages.map((s) => `${STAGE[s.stage][1]}: ${STAGE_STATE[s.state]}`).join(", ")}</span></div>`}
     </section>
-    ${d.waiting ? `<div class="notice"><b>Waiting for your approval</b> since ${esc(ago(d.waiting.started_at))}. Check the output below, then:<div class="cmds">${cmd(`forgeone approve ${t.id}`)}${cmd(`forgeone reject ${t.id} --note "what must change"`)}</div></div>` : ""}
+    ${d.waiting ? `<div class="notice"><b>${d.waiting.input?.gate ? "Waiting for your go-ahead" : "Waiting for your approval"}</b> since ${esc(ago(d.waiting.started_at))}. ${d.waiting.input?.gate ? "Nothing has run yet, and what it does cannot be undone. Check what it will do and what it builds on, then:" : "Check the output below, then:"}<div class="cmds">${cmd(`forgeone approve ${t.id}`)}${cmd(`forgeone reject ${t.id} --note "what must change"`)}</div></div>` : ""}
     ${["failed", "blocked"].includes(t.status) ? `<div class="notice bad"><b>${esc(STATUS_TEXT[t.status])}: ${esc(t.failure_reason || "")}.</b> ${esc(t.failure_detail || "")}</div>` : ""}
     <div class="grid g-kpi">
       ${kpi("Attempts", container ? "–" : `${fmtInt(t.attempts)}<small>/${fmtInt(t.max_attempts)}</small>`, container ? "see subtasks" : "allowed by policy")}
       ${kpi("Cost", esc(fmtUSD(t.cost_usd)), t.est_cost_usd != null ? `estimated ${esc(fmtUSD(t.est_cost_usd))}` : "")}
       ${kpi("Working time", esc(fmtMs(t.duration_ms)), t.est_minutes != null ? `estimated ${esc(fmtMs(t.est_minutes * 60000))}` : "")}
       ${kpi("Difficulty", diffText(t), "predicted → actual")}
-      ${kpi("Model", `<span class="text-value">${esc(t.model || "–")}</span>`, esc(t.executor === "agent" ? `agent ${g.agent || ""}` : t.executor === "llm" ? "one model call" : "subtasks"))}
+      ${kpi(t.executor === "step" && !t.model ? "Done by" : "Model", `<span class="text-value">${esc(t.model || (t.executor === "step" ? "code" : "–"))}</span>`,
+        esc(t.executor === "agent" ? `agent ${g.agent || ""}` : t.executor === "llm" ? "one model call" : t.executor === "step" ? `step ${t.step}` : "subtasks"))}
     </div>
     <div class="grid g-1-1">
       ${panel("What to do", "", `<div class="panel-body prose-s">

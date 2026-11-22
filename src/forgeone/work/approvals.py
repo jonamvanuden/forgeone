@@ -56,7 +56,18 @@ def decide(store: WorkStore, record_id: str, approved: bool, note: str | None = 
     changed = [a]
     g = tree.goal
 
-    if a.task_id:
+    if a.task_id and a.input.get("gate"):              # a go-ahead before irreversible work
+        t = tree.task(a.task_id)
+        if approved:
+            t.status = "pending"
+            msg = f"{t.code} {t.title}: go-ahead given. It runs the next time the goal runs: forgeone goal run {g.id}"
+        else:
+            t.failure_reason, t.failure_detail = "rejected", f"not allowed to run by {who}: {note}"
+            finish_task(tree, t, "failed")
+            msg = f"{t.code} {t.title}: will not run (failed). Replan if the goal needs another way."
+        changed.append(t)
+        changed += sync_containers(tree, t.milestone_id)
+    elif a.task_id:
         t = tree.task(a.task_id)
         if approved:
             finish_task(tree, t, "done")

@@ -21,7 +21,7 @@ one responsibility and has its own README when it is not built yet.
 | Package | Owns | Status |
 |---|---|---|
 | `work/` | **How work is done, for every agent type.** Goal → milestones → tasks → actions: planner, policy (stages per risk, routing, estimates), engine (execute → verify → edge test → approve, retries with feedback, budgets, human approvals, replanning) | working |
-| `builder/` | goal → AgentSpec; later the test → judge → repair loop. Nodes, prompts (`prompts/*.md`), state | working |
+| `builder/` | goal.md → checked AgentSpec → published. The build playbook (design, spec, publish steps and their checks), prompts (`prompts/*.md`); the original LangGraph graph as `--legacy` | working |
 | `workspace/` | Agent repositories: registry (`agents.yaml`), readiness checks, publishing to `agent/` on a branch, scaffolding new agent repos | working |
 | `spec/` | Contracts: `AgentSpec`, the tool allowlist | working |
 | `evals/` | **The core.** Suites, traces, checks, judges + rubrics, scorecards, promotion gate, **variants** and the **runner** | working; LLM judge next |
@@ -53,10 +53,22 @@ one responsibility and has its own README when it is not built yet.
    `runtime`, `tools` or `evals` imports `work`.
 
 ## Data flow of one build
+A build is a goal like any other, with a fixed plan: the playbook `build_agent`
+(`builder/playbook.py`), run by the work engine (`builder/run.py`).
+
 `forgeone build --agent voyagerone` → `workspace`: agent repo must be a clean `main`, pull
-(fails here, before any tokens are spent) → `start_run` (run_id, events.jsonl, Postgres sink)
-→ `plan` → `build` (structured `AgentSpec`) → `runs/<id>/spec.yaml` → `publish`: commit
-`agent/spec.yaml` + `agent/BUILD.md` on branch `forgeone/<run-id>`, push → decision `published`.
+(fails here, before any tokens are spent) → a Goal with playbook `build_agent` → one session named
+`forgeone.build` (so the Builds pages, spec versions and decisions work as before):
+
+| Milestone | Task (code step) | Stages | Checks |
+|---|---|---|---|
+| M1 Design ready | 1.1 design (`plan` prompt) | execute, verify | reviewer model on 5 criteria |
+| M2 Agent spec written and checked | 2.1 spec (`build` prompt → `AgentSpec`) | execute, verify, edge_test | hard checks first: name, write_report, open_page, untrusted-content rule; then reviewer and edge tests |
+| M3 Published | 3.1 publish (`AgentRepo.publish`) | execute, verify (checks only); `--publish main`: your go-ahead first | committed or unchanged, pushed |
+
+A failed hard check fails the attempt without a model call and its fix goes into the next attempt.
+The accepted spec is written to `runs/<id>/spec.yaml` and logged as the `spec` artifact.
+`forgeone build --legacy` runs the original two-node LangGraph graph (`builder/graph.py`).
 
 ## Data flow of one agent run
 `forgeone run "task"` or `forgeone eval run` → `evals.runner` loads `agent/spec.yaml` (the merged
@@ -97,6 +109,14 @@ tokens, time, verdict, confidence, per-criterion results, feedback, failure reas
 | verify | the automatic checks first (no model call when a hard check fails), then a reviewer model that sees the criteria and the output, never the executor's reasoning | any acceptance criterion is not met |
 | edge_test | a model that tests 2–4 edge cases | an edge case that matters is not handled |
 | approve | an AI approver (medium risk) or you (high risk, irreversible) | rejected |
+
+Work that cannot be undone (publish, send, pay) gets your **go-ahead before it runs**: its stages
+are approve → execute → verify. The planner puts the preparation (the draft) in a separate,
+reversible task, so that still gets verified and edge-tested first.
+
+Known processes use a **playbook** instead of the planner: a fixed plan in code with explicit
+stages, criteria and checks, and code steps (Python functions) for the work. Building an agent is
+the first playbook.
 
 A failed stage sends its feedback into the next attempt (max 3, 2 for high risk). A task that runs out
 of attempts fails, tasks that depend on it are blocked, the milestone fails. Supervised goals stop for

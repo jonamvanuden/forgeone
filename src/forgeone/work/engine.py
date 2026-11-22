@@ -11,6 +11,8 @@ and verdict. The engine never decides silently: each decision has a reason on th
 """
 from __future__ import annotations
 
+import logging
+import time
 from contextlib import contextmanager
 
 from ..observability import log_event, start_run
@@ -19,12 +21,43 @@ from .brain import Answer, Brain
 from .executors import CHECK_FAILURE, AgentExecutor, ExecResult, LLMExecutor
 from .model import FAILURE_REASONS, Action, Goal, GoalTree, Milestone, Task, now
 from .planner import bullets, milestones_from, numbered, task_types_text, tasks_from, workers_text
-from .policy import MAX_DEPTH, MAX_REPLANS, SPLIT_AT_DIFFICULTY, actual_difficulty, as_container, milestone_approver
+from .playbooks import StepContext, StepFailed
+from .playbooks import load as load_playbook
+from .policy import (MAX_DEPTH, MAX_REPLANS, SPLIT_AT_DIFFICULTY, actual_difficulty, approver_for, as_container,
+                     cheap_model, estimate_cost, is_gate, milestone_approver)
 from .schemas import Approval, EdgeReport, MilestonePlan, TaskPlan, Verdict
 from .store import WorkStore, default_store
 
 OUTPUT_LIMIT = 30000      # characters of output a reviewer sees
 DEP_LIMIT = 4000          # characters of each dependency's output an executor sees
+
+
+FIX = {"cited_urls_were_opened": "Cite only pages you opened in this attempt.",
+       "quotes_found_on_pages": "Quote text exactly as it appears on the page."}
+
+
+class StepExecutor:
+    """Runs a playbook step: a registered Python function."""
+    name = "step"
+
+    def __init__(self, engine: "Engine", tree: GoalTree):
+        self.engine, self.tree = engine, tree
+
+    def run(self, task: Task, context: dict) -> ExecResult:
+        fn = load_playbook(self.tree.goal.playbook).steps[task.step]
+        ctx = StepContext(goal=self.tree.goal, tree=self.tree, task=task, brain=self.engine.brain,
+                          deps=[d for d in (self.tree.task(i) for i in task.depends_on) if d], run_id=self.engine.run_id)
+        t0 = time.perf_counter()
+        try:
+            res = fn(ctx)
+        except Exception as e:  # noqa: BLE001
+            known = isinstance(e, StepFailed)
+            return ExecResult(False, "", task.model, None, duration_ms=round((time.perf_counter() - t0) * 1000),
+                              error=str(e) if known else f"{type(e).__name__}: {e}",
+                              failure_reason=e.failure_reason if known else "tool_error")
+        if not res.duration_ms:
+            res.duration_ms = round((time.perf_counter() - t0) * 1000)
+        return res
 
 
 class BudgetExhausted(Exception):
@@ -115,21 +148,39 @@ class Engine:
             self.run_id = run_id_var.get()
             yield
             return
-        with start_run(name, goal_id=goal.id, title=goal.title, agent=goal.agent) as rid:
+        fields = dict(goal_id=goal.id, title=goal.title, agent=goal.agent)
+        if goal.playbook:                                  # e.g. builds keep their own run name and fields
+            pb = load_playbook(goal.playbook)
+            name = pb.session_name or name
+            fields.update(pb.session_fields(goal) if pb.session_fields else {})
+        with start_run(name, **fields) as rid:
             self.run_id = rid
             yield
 
     @contextmanager
     def _node(self, name: str, attempt: int | None = None):
+        """Labels every event and model call inside, and records the step for the run timeline."""
         a, b = node_var.set(name), iteration_var.set(attempt)
+        t0 = time.perf_counter()
+        log_event("node.start", logging.DEBUG)
         try:
             yield
+        except Exception as e:
+            log_event("node.error", logging.ERROR, error=f"{type(e).__name__}: {e}",
+                      duration_ms=round((time.perf_counter() - t0) * 1000))
+            raise
+        else:
+            log_event("node.end", duration_ms=round((time.perf_counter() - t0) * 1000))
         finally:
             node_var.reset(a)
             iteration_var.reset(b)
 
+    @staticmethod
+    def _label(stage: str, t: Task) -> str:
+        return f"{stage} {t.step.rsplit('.', 1)[-1] if t.step else t.code}"
+
     def agent(self, goal: Goal) -> AgentExecutor | None:
-        if not goal.agent:
+        if not goal.agent or goal.playbook:
             return None
         if self._agent is None:
             self._agent = self.agent_factory(goal) if self.agent_factory else AgentExecutor(goal.agent)
@@ -218,6 +269,11 @@ class Engine:
                 t.status = "superseded"
                 self.store.save(t)
         g.plan_version += 1
+        if g.playbook:
+            self._plan_playbook(tree, done)
+            g.status, g.note = "planned", None
+            self.store.save(g)
+            return
         history = ""
         if g.plan_version > 1:
             history = (f"\n# This is a replan (plan version {g.plan_version})\nReason: {reason or 'requested'}\n"
@@ -245,6 +301,43 @@ class Engine:
             self._plan_milestone(tree, m, tools, plan_text.replace(f"- M{m.seq} ", f"- -> M{m.seq} "))
         g.status, g.note = "planned", None
         self.store.save(g)
+
+    def _plan_playbook(self, tree: GoalTree, done: list[Milestone]) -> None:
+        """A fixed plan from code: no planner call, the same records as a planned goal."""
+        g = tree.goal
+        pb = load_playbook(g.playbook)
+        a = self._act(tree, "plan", actor_type="tool", actor=f"playbook:{pb.name}",
+                      input={"level": "goal", "plan_version": g.plan_version, "playbook": pb.name})
+        kept = {m.title for m in done}
+        templates = [mt for mt in pb.plan(g) if mt.title not in kept]
+        seq = max((m.seq for m in tree.milestones), default=0)
+        ids: dict[str, str] = {t.step or t.code: t.id for t in tree.tasks if t.status == "done"}
+        new_ms, new_tasks = [], []
+        for mt in templates:
+            seq += 1
+            m = Milestone(goal_id=g.id, plan_version=g.plan_version, seq=seq, title=mt.title,
+                          description=mt.description, done_when=mt.done_when, approval=mt.approval)
+            new_ms.append(m)
+            for j, tt in enumerate(mt.tasks, 1):
+                model = tt.model or (cheap_model() if tt.step is None else None)
+                t = Task(goal_id=g.id, milestone_id=m.id, plan_version=g.plan_version, seq=j, code=f"{seq}.{j}",
+                         title=tt.title, description=tt.description, type=tt.type, difficulty=tt.difficulty,
+                         risk=tt.risk, reversible=tt.reversible, acceptance_criteria=tt.criteria,
+                         depends_on=[ids[k] for k in tt.depends_on if k in ids], input=tt.input,
+                         expected_output=tt.expected_output, executor="step" if tt.step else "llm", step=tt.step,
+                         verifier=tt.verifier, model=model, stages=list(tt.stages), max_attempts=tt.max_attempts,
+                         est_steps=tt.est_steps, est_minutes=tt.est_minutes,
+                         est_cost_usd=estimate_cost(model, tt.est_steps) if model else 0.0,
+                         routing_reason=f"playbook {pb.name}: " + (f"code step {tt.step}" + (f" with {model}" if model else "")
+                                                                   if tt.step else f"one model call with {model}"))
+                t.approver = approver_for(t, g)
+                ids[tt.key] = t.id
+                new_tasks.append(t)
+        self._finish(tree, a, "passed", reason=f"fixed plan from playbook {pb.name}",
+                     output={"milestones": [f"M{m.seq} {m.title}" for m in new_ms]})
+        tree.milestones.extend(new_ms)
+        tree.tasks.extend(new_tasks)
+        self.store.save(*new_ms, *new_tasks)
 
     def _plan_milestone(self, tree: GoalTree, m: Milestone, tools, plan_text: str) -> None:
         g = tree.goal
@@ -325,7 +418,7 @@ class Engine:
                     g.status, g.note = "waiting", f"waiting for your approval: {what}"
                     return
                 # failed
-                if g.autonomy == "autonomous" and g.plan_version - 1 < MAX_REPLANS:
+                if g.autonomy == "autonomous" and not g.playbook and g.plan_version - 1 < MAX_REPLANS:
                     self._plan(tree, reason=f"M{m.seq} {m.title} failed: {m.note}")
                     g.status = "running"
                     self.store.save(g)
@@ -405,7 +498,12 @@ class Engine:
 
     def _approve_milestone(self, tree: GoalTree, m: Milestone) -> str:
         g = tree.goal
-        if milestone_approver(g) == "human":
+        who = milestone_approver(g, m)
+        if who == "none":                                  # a playbook milestone that is done when its tasks are
+            m.status, m.note, m.finished_at = "done", None, now()
+            self.store.save(m)
+            return "done"
+        if who == "human":
             a = self._act(tree, "approve", milestone=m, actor_type="human", actor=self.human,
                           input={"done_when": m.done_when})
             a.status = "pending"
@@ -435,6 +533,18 @@ class Engine:
     def _run_task(self, tree: GoalTree, m: Milestone, t: Task) -> None:
         t.status, t.started_at = "running", t.started_at or now()
         self.store.save(t)
+        if is_gate(t.stages):                              # irreversible: your go-ahead before it runs
+            gates = [a for a in tree.actions_of(t.id) if a.kind == "approve" and a.input.get("gate")]
+            if not any(a.status == "passed" for a in gates):
+                if not any(a.status == "pending" for a in gates):
+                    a = self._act(tree, "approve", task=t, attempt=t.attempts + 1, actor_type="human",
+                                  actor=self.human, input={"gate": True, "criteria": t.acceptance_criteria})
+                    a.status = "pending"
+                    self.store.save(a)
+                t.status = "waiting"
+                self.store.save(t)
+                return
+        after = t.stages[t.stages.index("execute") + 1:]
         try:
             while t.attempts < t.max_attempts:
                 self._check_budget(tree)
@@ -448,7 +558,7 @@ class Engine:
                     continue
                 t.output = res.output
                 failed = None
-                for stage in t.stages[1:]:
+                for stage in after:
                     self._check_budget(tree)
                     if stage == "approve" and t.approver == "human":
                         a = self._act(tree, "approve", task=t, attempt=n, actor_type="human", actor=self.human,
@@ -465,6 +575,7 @@ class Engine:
                 if failed is None:
                     finish_task(tree, t, "done")
                     self.store.save(t)
+                    self._on_done(tree, t)
                     return
                 t.failure_reason = failed.failure_reason or ("rejected" if failed.kind == "approve" else "criteria_not_met")
                 t.failure_detail = f"{failed.kind}: {failed.reason}"
@@ -477,6 +588,13 @@ class Engine:
             self.store.save(t)
             raise
 
+    def _on_done(self, tree: GoalTree, t: Task) -> None:
+        if t.step and tree.goal.playbook:
+            hook = load_playbook(tree.goal.playbook).on_done.get(t.step)
+            if hook:
+                hook(StepContext(goal=tree.goal, tree=tree, task=t, brain=self.brain,
+                                 deps=[d for d in (tree.task(i) for i in t.depends_on) if d], run_id=self.run_id))
+
     def _context(self, tree: GoalTree, m: Milestone, t: Task) -> dict:
         deps = [d for d in (tree.task(i) for i in t.depends_on) if d is not None]
         return dict(goal=tree.goal.title, constraints=bullets(tree.goal.constraints), milestone=f"M{m.seq} {m.title}",
@@ -486,11 +604,16 @@ class Engine:
                     feedback=f"\n# Feedback on your previous attempt\n{t.feedback}\n" if t.feedback else "")
 
     def _execute(self, tree: GoalTree, m: Milestone, t: Task, n: int) -> ExecResult:
-        executor = self.agent(tree.goal) if t.executor == "agent" else None
-        executor = executor or LLMExecutor(self.brain)
-        a = self._act(tree, "execute", task=t, attempt=n, actor=f"{executor.name}:{t.model}",
+        if t.executor == "step":
+            executor = StepExecutor(self, tree)
+        else:
+            executor = self.agent(tree.goal) if t.executor == "agent" else None
+            executor = executor or LLMExecutor(self.brain)
+        a = self._act(tree, "execute", task=t, attempt=n,
+                      actor=f"step:{t.step}" if t.executor == "step" else f"{executor.name}:{t.model}",
+                      actor_type="tool" if t.executor == "step" and not t.model else "ai",
                       input={"executor": executor.name, "depends_on": t.depends_on, "feedback": t.feedback})
-        with self._node(f"execute {t.code}", n):
+        with self._node(self._label("execute", t), n):
             res = executor.run(t, self._context(tree, m, t))
         over = bool(t.timeout_s and res.duration_ms > t.timeout_s * 1000)
         self._finish(tree, a, "passed" if res.ok else "failed", model=res.model, prompt_version=res.prompt_version,
@@ -501,15 +624,21 @@ class Engine:
 
     def _verify(self, tree: GoalTree, t: Task, n: int, res: ExecResult) -> Action:
         checks = res.evidence.get("checks") or []
-        hard = [c for c in checks if c["hard"] and not c["passed"]]
-        if hard:                                           # facts beat opinions: no model call needed
+        hard = [c for c in checks if c.get("hard", True) and not c["passed"]]
+        as_criteria = [{"criterion": c["name"], "met": c["passed"], "note": c.get("detail", "")} for c in checks]
+        if hard or t.verifier == "checks":                 # facts beat opinions: no model call needed
             a = self._act(tree, "verify", task=t, attempt=n, actor_type="tool", actor="checks")
-            return self._finish(tree, a, "failed", confidence=1.0,
-                                reason="; ".join(f"{c['name']}: {c['detail']}" for c in hard),
-                                failure_reason=CHECK_FAILURE.get(hard[0]["name"], "other"),
-                                feedback="Cite only pages you opened in this attempt, and quote text exactly as it "
-                                         "appears on the page.",
-                                criteria=[{"criterion": c["name"], "met": c["passed"], "note": c["detail"]} for c in checks])
+            if not hard and checks:
+                soft = [c["name"] for c in checks if not c["passed"]]
+                return self._finish(tree, a, "passed", confidence=1.0, criteria=as_criteria,
+                                    reason=f"{len(checks) - len(soft)} of {len(checks)} checks passed"
+                                           + (f"; warnings: {', '.join(soft)}" if soft else ""))
+            failure = (hard[0].get("failure_reason") or CHECK_FAILURE.get(hard[0]["name"], "criteria_not_met")
+                       if hard else "criteria_not_met")
+            return self._finish(tree, a, "failed", confidence=1.0, criteria=as_criteria, failure_reason=failure,
+                                reason="; ".join(f"{c['name']}: {c.get('detail', '')}" for c in hard) or "no checks ran",
+                                feedback=" ".join(c.get("fix") or FIX.get(c["name"]) or f"{c['name']}: {c.get('detail', '')}"
+                                                  for c in hard) or None)
         evidence = ""
         if res.evidence:
             e = res.evidence
@@ -518,7 +647,7 @@ class Engine:
                         f"- automatic checks: {', '.join(c['name'] + (' passed' if c['passed'] else ' FAILED') for c in checks)}\n")
         a = self._act(tree, "verify", task=t, attempt=n, actor=self.brain.judge_model,
                       input={"criteria": len(t.acceptance_criteria), "evidence": bool(evidence)})
-        with self._node(f"verify {t.code}", n):
+        with self._node(self._label("verify", t), n):
             ans = self._ask(tree, a, Verdict, "verify", self.brain.judge_model, title=t.title,
                             expected_output=t.expected_output, criteria=numbered(t.acceptance_criteria),
                             evidence=evidence, output=_cut(res.output, OUTPUT_LIMIT),
@@ -534,7 +663,7 @@ class Engine:
 
     def _edge_test(self, tree: GoalTree, t: Task, n: int, res: ExecResult) -> Action:
         a = self._act(tree, "edge_test", task=t, attempt=n, actor=self.brain.judge_model)
-        with self._node(f"edge_test {t.code}", n):
+        with self._node(self._label("edge_test", t), n):
             ans = self._ask(tree, a, EdgeReport, "edge_test", self.brain.judge_model, title=t.title,
                             description=t.description, expected_output=t.expected_output,
                             criteria=bullets(t.acceptance_criteria), output=_cut(res.output, OUTPUT_LIMIT))
@@ -554,7 +683,7 @@ class Engine:
         reviews = "\n".join(f"- {a.kind}: {'passed' if a.status == 'passed' else 'failed'}. {a.reason or ''}"
                             for a in tree.actions_of(t.id) if a.attempt == n and a.kind in ("verify", "edge_test"))
         a = self._act(tree, "approve", task=t, attempt=n, actor=self.brain.judge_model)
-        with self._node(f"approve {t.code}", n):
+        with self._node(self._label("approve", t), n):
             ans = self._ask(tree, a, Approval, "approve", self.brain.judge_model, goal=tree.goal.title, code=t.code,
                             title=t.title, expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria),
                             reviews=reviews or "- none", output=_cut(res.output, OUTPUT_LIMIT))

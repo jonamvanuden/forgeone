@@ -28,7 +28,7 @@ Done when:
 - type: one of the task types above.
 - difficulty, 1 to 5: 1 trivial, 3 normal, 5 too big for one run (it will be split into subtasks).
 - risk: low = only gathers information or drafts; medium = its output is delivered or used for decisions; high = publishes, sends, spends money or changes something outside ForgeOne.
-- reversible: false if the result cannot be undone.
+- reversible: false if the result cannot be undone. Split such work in two: a reversible task that prepares it (the draft, the order, the message) and a separate irreversible task that does it, depending on the first. The irreversible task waits for the user's go-ahead before it runs.
 - acceptance_criteria: 2 to 5 statements that a reviewer can check from the output alone. Write them carefully: the reviewer checks exactly these and nothing else.
 - depends_on: positions (1-based) of earlier tasks in your list whose output this task needs. Only earlier tasks.
 - input: what the task starts from. expected_output: what it must deliver, format and content.

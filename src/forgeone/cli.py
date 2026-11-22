@@ -1,6 +1,6 @@
 """The `forgeone` command.
 
-    forgeone build [--agent voyagerone] [--publish branch|main|none] [--goal path.md]
+    forgeone build [--agent voyagerone] [--publish branch|main|none] [--goal path.md] [--budget USD] [--legacy]
     forgeone agent list | status <name> | init <name> --path DIR [--remote URL]
     forgeone db migrate | status | backfill
     forgeone run "task" [--agent voyagerone] [--variant NAME] [--spec FILE]
@@ -25,9 +25,21 @@ from .config import settings
 
 
 def _build(a):
+    if a.legacy:
+        from .builder import run_build_legacy
+
+        run_build_legacy(a.agent, a.goal, publish=a.publish)
+        return
     from .builder import run_build
 
-    run_build(a.agent, a.goal, publish=a.publish)
+    res = run_build(a.agent, a.goal, publish=a.publish, budget_usd=a.budget)
+    _print_tree(res["tree"])
+    if res["published"]:
+        print(res["published"])
+    if res["spec_path"]:
+        print(f"spec: {res['spec_path']}")
+    if res["status"] != "done":
+        raise SystemExit(f"forgeone: build {res['status']}: {res['tree'].goal.note or ''}")
 
 
 def _agent(a):
@@ -309,6 +321,8 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--goal", default=None, help="goal file (default: goal.md in the agent's repo)")
     b.add_argument("--publish", default="branch", choices=["branch", "main", "none"],
                    help="branch: push forgeone/<run-id> (default), main: commit to main, none: don't touch the repo")
+    b.add_argument("--budget", type=float, default=None, help="stop the build when it has cost this much (USD)")
+    b.add_argument("--legacy", action="store_true", help="the original two-node LangGraph build, without tasks and checks")
     b.set_defaults(fn=_build)
 
     ag = sub.add_parser("agent", help="agent repositories: list, status, init")

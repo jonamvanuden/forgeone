@@ -549,6 +549,7 @@ h1.goal { font-size: clamp(24px, 2.6vw, 32px); line-height: 1.2; font-weight: 70
 .stg.failed { background: var(--fail); border: 0; color: #fff; }
 .stg.pending { background: #e8a33d; border: 0; color: #2a1a05; }
 .stg.running { background: var(--run); border: 0; color: #fff; }
+.stg.gate { border-radius: 50%; }
 .show-sm { display: none; }
 .chip.bad { background: var(--fail-50); color: var(--fail); }
 

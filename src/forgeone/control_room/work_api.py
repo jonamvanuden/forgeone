@@ -151,5 +151,5 @@ def api_work_task(request: Request):
         "stages": stage_states(tree, t),
         "actions": [a.model_dump() for a in acts],
         "last_verdict": verdicts[-1].criteria if verdicts else None,
-        "waiting": waiting.model_dump(include={"id", "started_at"}) if waiting else None,
+        "waiting": waiting.model_dump(include={"id", "started_at", "input"}) if waiting else None,
     }

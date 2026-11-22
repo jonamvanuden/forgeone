@@ -1,6 +1,9 @@
-"""The builder graph.
+"""The original builder: a two-node LangGraph graph. Kept as `forgeone build --legacy`.
 
-    today:   START -> plan -> build -> END
+`forgeone build` now runs the build as a goal (builder/run.py + builder/playbook.py): the same
+plan and build prompts, but with tasks, checks, retries with feedback and a record of every attempt.
+
+    legacy:  START -> plan -> build -> END
     next:    ... build -> test -> judge --pass--> publish
                             ^                |
                             +----- repair <--+ fail, budget left
@@ -58,7 +61,7 @@ Builder test cases (for quick feedback only; promotion is decided by `evals/suit
 """
 
 
-def run_build(agent: str = "voyagerone", goal_file: str | Path | None = None, publish: str = "branch") -> dict:
+def run_build_legacy(agent: str = "voyagerone", goal_file: str | Path | None = None, publish: str = "branch") -> dict:
     """Build an agent from the goal in its own repository and publish the result there.
 
     publish: "branch" (default) commits agent/ on branch forgeone/<run-id> and pushes it,

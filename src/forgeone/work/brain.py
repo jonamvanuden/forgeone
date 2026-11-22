@@ -68,23 +68,36 @@ class Brain:
         return {"callbacks": [LLMCallLogger()]}
 
     def ask(self, schema, prompt_name: str, model: str, **values) -> Answer:
-        """Structured answer: returns a validated `schema` instance."""
+        """Structured answer from a prompt in work/prompts: returns a validated `schema` instance."""
+        return self.structured(schema, render(prompt_name, **values), model, prompt_version(prompt_name))
+
+    def write(self, prompt_name: str, model: str, **values) -> Answer:
+        """Free text answer from a prompt in work/prompts."""
+        return self.complete(render(prompt_name, **values), model, prompt_version(prompt_name))
+
+    def structured(self, schema, prompt: str, model: str, version: str) -> Answer:
+        """Structured answer for an already rendered prompt (playbook steps bring their own prompts)."""
         llm = self.llm_factory(model).with_structured_output(schema, method="json_schema", include_raw=True)
         t0 = time.perf_counter()
-        out = llm.invoke(render(prompt_name, **values), config=self._config())
+        out = llm.invoke(prompt, config=self._config())
         ms = round((time.perf_counter() - t0) * 1000)
         parsed = out.get("parsed") if isinstance(out, dict) else out
         if parsed is None:
-            raise ValueError(f"{prompt_name}: model output did not match {schema.__name__}: {out.get('parsing_error')}")
+            raise ValueError(f"{version}: model output did not match {schema.__name__}: {out.get('parsing_error')}")
         tin, tout = _usage(out.get("raw") if isinstance(out, dict) else None)
-        return Answer(parsed, model, prompt_version(prompt_name), call_cost(model, tin, tout) or 0.0, tin, tout, ms)
+        return Answer(parsed, model, version, call_cost(model, tin, tout) or 0.0, tin, tout, ms)
 
-    def write(self, prompt_name: str, model: str, **values) -> Answer:
-        """Free text answer."""
+    def complete(self, prompt: str, model: str, version: str) -> Answer:
+        """Free text answer for an already rendered prompt."""
         t0 = time.perf_counter()
-        msg = self.llm_factory(model).invoke(render(prompt_name, **values), config=self._config())
+        msg = self.llm_factory(model).invoke(prompt, config=self._config())
         ms = round((time.perf_counter() - t0) * 1000)
         content = msg.content if isinstance(msg.content, str) else "".join(
             b.get("text", "") if isinstance(b, dict) else str(b) for b in msg.content)
         tin, tout = _usage(msg)
-        return Answer(content.strip(), model, prompt_version(prompt_name), call_cost(model, tin, tout) or 0.0, tin, tout, ms)
+        return Answer(content.strip(), model, version, call_cost(model, tin, tout) or 0.0, tin, tout, ms)
+
+
+def text_version(name: str, text: str) -> str:
+    """Prompt version for prompts that live outside work/prompts (e.g. the builder's)."""
+    return f"{name}@{hashlib.sha256(text.encode()).hexdigest()[:8]}"

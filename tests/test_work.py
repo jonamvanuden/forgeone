@@ -172,13 +172,14 @@ def test_failed_task_blocks_dependents_and_fails_goal(env):
     assert tree.active_milestones()[1].status == "pending"
 
 
-def test_high_risk_task_waits_for_you_and_reject_reruns_with_note(env):
+def test_high_risk_task_waits_for_your_sign_off_and_reject_reruns_with_note(env):
     script, store, engine = env
-    script.tasks["Facts gathered"] = [draft("publish", risk="high", reversible=False)]
+    script.tasks["Facts gathered"] = [draft("press release", risk="high")]
     gid = new_goal(engine).goal.id
     tree = engine.run(gid)
     t = tree.tasks_of(tree.active_milestones()[0].id)[0]
-    assert t.approver == "human" and t.status == "waiting" and tree.goal.status == "waiting"
+    assert t.stages == ["execute", "verify", "edge_test", "approve"] and t.approver == "human"
+    assert t.status == "waiting" and tree.goal.status == "waiting"
     with pytest.raises(ValueError):
         decide(store, t.id, False)                                            # a rejection needs a note
     decide(store, t.id, False, "use the 2015 guideline")
@@ -189,6 +190,24 @@ def test_high_risk_task_waits_for_you_and_reject_reruns_with_note(env):
     decide(store, t.id.lower(), True)                                         # ids are case-insensitive
     t = store.load(gid).task(t.id)
     assert t.status == "done" and t.attempts == 2
+
+
+def test_irreversible_task_waits_for_a_go_ahead_before_it_runs(env):
+    script, store, engine = env
+    script.tasks["Facts gathered"] = [draft("draft the mail"), draft("send the mail", risk="high", reversible=False, deps=[1])]
+    gid = new_goal(engine).goal.id
+    tree = engine.run(gid)
+    draft_t, send = tree.tasks_of(tree.active_milestones()[0].id)
+    assert send.stages == ["approve", "execute", "verify"] and send.status == "waiting"
+    assert draft_t.status == "done" and not [a for a in tree.actions_of(send.id) if a.kind == "execute"]
+    from forgeone.work.views import stage_states, waiting_on_you
+    assert [s["state"] for s in stage_states(tree, send)] == ["pending", "none", "none"]
+    assert waiting_on_you(tree)[0]["kind"] == "gate"
+    assert "go-ahead" in decide(store, send.id, True)
+    tree = engine.run(gid)
+    send = tree.task(send.id)
+    assert [a.kind for a in tree.actions_of(send.id)] == ["approve", "execute", "verify"] and send.status == "done"
+    assert [s["state"] for s in stage_states(tree, send)] == ["passed", "passed", "passed"]
 
 
 def test_budget_pauses_the_goal(env):
@@ -251,6 +270,7 @@ def test_hard_check_failure_needs_no_model_call(env):
 def test_policy_rules():
     assert stages_for("low") == ["execute", "verify"]
     assert stages_for("high")[-1] == "approve"
+    assert stages_for("low", reversible=False) == ["approve", "execute", "verify"]
     from forgeone.work.model import Task
     t = Task(goal_id="g", milestone_id="m", plan_version=1, seq=1, code="1.1", title="x", difficulty=3,
              attempts=1, est_cost_usd=0.01, cost_usd=0.04, status="done")

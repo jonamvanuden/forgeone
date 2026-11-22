@@ -32,11 +32,23 @@ def strong_model() -> str:
     return os.getenv("FORGEONE_STRONG_MODEL", "claude-sonnet-5-5")
 
 
-def stages_for(risk: str) -> list[Stage]:
-    """Low risk: do it and check it. Medium and high: also test edge cases and get approval."""
+def stages_for(risk: str, reversible: bool = True) -> list[Stage]:
+    """Low risk: do it and check it. Medium and high: also test edge cases and get the output approved.
+
+    Irreversible work (publish, send, pay) is approved BEFORE it runs: approving afterwards would
+    be too late. The planner is told to put the preparation (the draft) in a separate, reversible
+    task, so the draft still gets verified and edge-tested first.
+    """
+    if not reversible:
+        return ["approve", "execute", "verify"]
     if risk == "low":
         return ["execute", "verify"]
     return ["execute", "verify", "edge_test", "approve"]
+
+
+def is_gate(stages: list[str]) -> bool:
+    """True when approval comes before execution: a go-ahead, not a sign-off."""
+    return "approve" in stages and "execute" in stages and stages.index("approve") < stages.index("execute")
 
 
 def approver_for(task: Task, goal: Goal) -> str | None:
@@ -48,7 +60,10 @@ def approver_for(task: Task, goal: Goal) -> str | None:
     return "ai"
 
 
-def milestone_approver(goal: Goal) -> str:
+def milestone_approver(goal: Goal, milestone=None) -> str:
+    """human | ai | none. A playbook can set it per milestone; otherwise the goal's autonomy decides."""
+    if milestone is not None and milestone.approval:
+        return milestone.approval
     return "human" if goal.autonomy == "supervised" else "ai"
 
 
@@ -75,7 +90,7 @@ def estimate_cost(model: str, steps: int | None) -> float | None:
 def prepare(task: Task, goal: Goal, has_agent: bool) -> Task:
     """Fill the routing and policy fields of a freshly planned task."""
     task.difficulty = max(1, min(5, int(task.difficulty)))
-    task.stages = stages_for(task.risk)
+    task.stages = stages_for(task.risk, task.reversible)
     task.approver = approver_for(task, goal)
     task.executor, task.model, task.routing_reason = route(task, goal, has_agent)
     task.est_cost_usd = estimate_cost(task.model, task.est_steps)

@@ -17,7 +17,7 @@ cp .env.example .env            # fill in the key and passwords
 docker compose up -d            # Postgres
 forgeone db migrate
 git clone git@github-voyagerone:jonamvanuden/VoyagerOne.git ../VoyagerOne   # agent repo, see agents.yaml
-forgeone build --agent voyagerone   # pushes branch forgeone/<run-id> to VoyagerOne
+forgeone build --agent voyagerone   # a goal: design -> checked spec -> branch forgeone/<run-id> on VoyagerOne
 forgeone control-room           # dashboard on 127.0.0.1:8501
 pytest
 ```
