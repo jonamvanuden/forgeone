@@ -32,6 +32,7 @@ class ExecResult:
     error: str | None = None
     failure_reason: str | None = None
     evidence: dict = field(default_factory=dict)   # what the verifier may use besides the output
+    context: dict = field(default_factory=dict)    # manifest additions: a step's own manifest, an agent's history
 
 
 class LLMExecutor:
@@ -117,7 +118,7 @@ class AgentExecutor:
             "checks": [{"name": c.name, "passed": c.passed, "hard": c.hard, "detail": c.detail} for c in checks],
         }
         res = ExecResult(True, output, cfg.model, prompt_version("execute_agent"), trace.cost_usd, trace.tokens_in,
-                         trace.tokens_out, trace.duration_ms, evidence=evidence)
+                         trace.tokens_out, trace.duration_ms, evidence=evidence, context={"agent": trace.context})
         if trace.stop_reason == "cost_limit":
             res.ok, res.error, res.failure_reason = False, "cost budget of the attempt used up", "budget_exceeded"
         elif trace.stop_reason == "error":

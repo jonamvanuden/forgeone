@@ -177,7 +177,8 @@ class Action(BaseModel):
     feedback: str | None = None
     failure_reason: FailureReason | None = None
     criteria: list[dict] = []                # per-criterion results: {criterion, met, note}
-    input: dict = {}                         # the context this action was given (summary)
+    input: dict = {}                         # what this action was asked to do (summary)
+    context: dict = {}                       # the context manifest of its model call (context/pack.py)
     output: dict = {}
     prompt_version: str | None = None
     model: str | None = None

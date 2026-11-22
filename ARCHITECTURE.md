@@ -29,7 +29,8 @@ one responsibility and has its own README when it is not built yet.
 | `tools/` | Deterministic tools: Playwright browser (SSRF-blocked), web_search, open_page, click, find_on_page, write_report | working |
 | `registry/` | Agent versions, champion/challenger, publishing | later |
 | `safety/` | Limits on agents: allowlist, budgets, injection defences, sandbox | partly |
-| `memory/` | What persists across runs | later |
+| `context/` | What each model call sees: context packs with a manifest per call (sections, tokens, cuts, exclusions), agent history shortening, prompt caching | working; budgets and memory next |
+| `memory/` | What persists across goals (lessons, earlier feedback), served through `context/` | later |
 | `llm/` | Model access (`chat_model`) and pricing (`PRICES`) | working |
 | `observability/` | Structured events: context, events, tracing, LLM logger, redaction | working |
 | `store/` | Postgres sink, writer, backfill, **versioned migrations** | working |
@@ -139,3 +140,15 @@ Control Room's Support page and by `forgeone support`:
 
 Plus "missed by the AI checks": work you rejected although the AI verify, edge test or approval had
 passed it. That is the most direct measure of how much the AI reviewers can be trusted.
+
+## Context: what each model call sees
+Every model call of the work engine and the builder builds its context with a `ContextPack`
+(`context/pack.py`): named sections with their source (a task id, an attempt) and limits. The
+resulting **context manifest** is stored on the action: tokens per section, what was cut and how
+much was lost, what was left out by rule, and the tokens really billed. The agent loop keeps its
+conversation short (`context/history.py`): the last 3 tool results in full, older long ones as one
+line (the full text stays in the trace for the checks), and the tools and system prompt are marked
+for prompt caching. Cache reads (10%) and writes (125%) are priced in `llm/pricing.py`.
+
+This makes context measurable like models: `v_context` shows per kind of call how much context
+it gets, how often it is cut and whether cut calls pass less often.

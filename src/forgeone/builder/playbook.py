@@ -20,6 +20,7 @@ import yaml
 from pydantic import ValidationError
 
 from ..config import settings
+from ..context import ContextPack
 from ..observability import log_artifact, log_decision, log_event
 from ..spec import TOOL_CATALOG, AgentSpec
 from ..work.brain import text_version
@@ -116,13 +117,23 @@ def _model_call(fn):
         raise StepFailed(f"{type(e).__name__}: {e}", "model_error") from e
 
 
+def _exclude_suite(pack: ContextPack) -> ContextPack:
+    pack.exclude("the agent's eval suite (evals/)", "the builder never reads the tests it will be judged on")
+    return pack
+
+
 def design(ctx: StepContext) -> ExecResult:
-    prompt = render("plan", goal=ctx.goal.description, tools=TOOL_CATALOG) + ctx.feedback
-    ans = _model_call(lambda: ctx.brain.complete(prompt, ctx.task.model, text_version("builder.plan", load("plan"))))
+    pack = _exclude_suite(ContextPack("builder.design", ctx.task.model))
+    pack.add("goal", ctx.goal.description, name="goal.md", source=ctx.args.get("goal_file"), required=True)
+    pack.fixed("tools", TOOL_CATALOG)
+    pack.add("feedback", ctx.feedback, name="feedback", required=True)
+    prompt = render("plan", goal=pack.values["goal"], tools=TOOL_CATALOG) + pack.values["feedback"]
+    version = text_version("builder.plan", load("plan"))
+    ans = _model_call(lambda: ctx.brain.complete(prompt, ctx.task.model, version))
     if not ans.value:
         raise StepFailed("the model returned an empty design", "criteria_not_met")
     return ExecResult(True, ans.value, ans.model, ans.prompt_version, ans.cost_usd, ans.tokens_in, ans.tokens_out,
-                      ans.duration_ms)
+                      ans.duration_ms, context=pack.manifest(load("plan"), version))
 
 
 def spec_checks(spec: dict, agent: str) -> list[dict]:
@@ -146,15 +157,22 @@ def spec_checks(spec: dict, agent: str) -> list[dict]:
 
 def write_spec(ctx: StepContext) -> ExecResult:
     agent = ctx.args["agent"]
-    plan_text = (ctx.task_by_step("builder.design").output or "") if ctx.task_by_step("builder.design") else ""
-    prompt = (render("build", goal=ctx.goal.description, plan=plan_text, tools=TOOL_CATALOG)
-              + SPEC_RULES.format(agent=agent) + ctx.feedback)
-    ans = _model_call(lambda: ctx.brain.structured(AgentSpec, prompt, ctx.task.model,
-                                                   text_version("builder.build", load("build") + SPEC_RULES)))
+    design_task = ctx.task_by_step("builder.design")
+    pack = _exclude_suite(ContextPack("builder.spec", ctx.task.model))
+    pack.add("goal", ctx.goal.description, name="goal.md", source=ctx.args.get("goal_file"), required=True)
+    pack.add("plan", design_task.output if design_task else "", name="design", source=design_task.id if design_task else None,
+             required=True)
+    pack.fixed("tools", TOOL_CATALOG)
+    pack.add("feedback", ctx.feedback, name="feedback", required=True)
+    prompt = (render("build", goal=pack.values["goal"], plan=pack.values["plan"], tools=TOOL_CATALOG)
+              + SPEC_RULES.format(agent=agent) + pack.values["feedback"])
+    version = text_version("builder.build", load("build") + SPEC_RULES)
+    ans = _model_call(lambda: ctx.brain.structured(AgentSpec, prompt, ctx.task.model, version))
     spec = ans.value.model_dump()
     return ExecResult(True, yaml.safe_dump(spec, sort_keys=False, allow_unicode=True), ans.model, ans.prompt_version,
                       ans.cost_usd, ans.tokens_in, ans.tokens_out, ans.duration_ms,
-                      evidence={"checks": spec_checks(spec, agent), "tools": spec["tools"], "max_steps": spec["max_steps"]})
+                      evidence={"checks": spec_checks(spec, agent), "tools": spec["tools"], "max_steps": spec["max_steps"]},
+                      context=pack.manifest(load("build") + SPEC_RULES, version))
 
 
 def spec_accepted(ctx: StepContext) -> None:

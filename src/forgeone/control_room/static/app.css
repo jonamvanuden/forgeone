@@ -683,3 +683,9 @@ details > summary { cursor: pointer; }
   .rail nav a.tab-hide { display: none; }
   .sfilters { justify-content: flex-start; width: 100%; }
 }
+
+/* context manifest */
+.table.ctx { margin-top: 8px; font-size: 12.5px; }
+.table.ctx td, .table.ctx th { padding: 6px 10px; }
+.ctx-ex { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
+.ctx-agent { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }

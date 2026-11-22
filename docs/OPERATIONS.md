@@ -5,7 +5,7 @@ All commands from `~/ForgeOne` with the venv active: `source .venv/bin/activate`
 ## Deploy a change from GitHub
 ```bash
 cd ~/ForgeOne && git pull && pip install -e . -q && systemctl restart forgeone-dashboard
-forgeone db migrate                       # only needed when a migration was added; always safe (004 goals, 005 playbooks, 006 automatable)
+forgeone db migrate                       # only needed when a migration was added; always safe (004 goals, 005 playbooks, 006 automatable, 007 context)
 ```
 
 ## Agent repositories

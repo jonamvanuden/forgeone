@@ -191,6 +191,39 @@ def analyze(trees: list[GoalTree], days: int | None = 30, scope: str = "all", no
                 missed.append({**_brief(tr, tr.task(a.task_id)), "note": a.reason, "passed_by": passed,
                                "when": a.started_at})
 
+    # ---- context: how much each kind of call gets, and whether cutting hurts ----
+    ctx: dict[str, dict] = {}
+    agent = {"runs": 0, "shortened": 0, "sent": 0, "without": 0, "cache_read": 0}
+    for tr in trees:
+        for a in tr.actions:
+            c = a.context or {}
+            if not c.get("sections") or a.status not in ("passed", "failed") or not recent(a.started_at):
+                continue
+            k = ctx.setdefault(a.kind, {"stage": a.kind, "calls": 0, "tokens_est": 0, "billed": 0, "billed_n": 0,
+                                        "cut": 0, "cut_passed": 0, "uncut": 0, "uncut_passed": 0, "tokens_lost": 0})
+            k["calls"] += 1
+            k["tokens_est"] += c.get("tokens_est", 0)
+            if c.get("tokens_billed"):
+                k["billed"] += c["tokens_billed"]
+                k["billed_n"] += 1
+            was_cut = (c.get("cut") or 0) > 0
+            k["cut" if was_cut else "uncut"] += 1
+            k["cut_passed" if was_cut else "uncut_passed"] += a.status == "passed"
+            k["tokens_lost"] += c.get("tokens_lost", 0)
+            h = c.get("agent")
+            if h:
+                agent["runs"] += 1
+                agent["shortened"] += h.get("shortened_results", 0)
+                agent["sent"] += h.get("sent_tokens_est", 0)
+                agent["without"] += h.get("without_shortening_est", 0)
+                agent["cache_read"] += h.get("cache_read_tokens", 0)
+    context = [{"stage": k["stage"], "calls": k["calls"], "tokens_est": round(k["tokens_est"] / k["calls"]),
+                "tokens_billed": round(k["billed"] / k["billed_n"]) if k["billed_n"] else None,
+                "cut_rate": k["cut"] / k["calls"], "tokens_lost": k["tokens_lost"],
+                "pass_when_cut": k["cut_passed"] / k["cut"] if k["cut"] else None,
+                "pass_uncut": k["uncut_passed"] / k["uncut"] if k["uncut"] else None}
+               for k in sorted(ctx.values(), key=lambda k: -k["calls"])]
+
     wasted = round(sum(_wasted(tr, t) for tr, t in work if recent(t.finished_at or t.updated_at)), 6)
     spent = round(sum(a.cost_usd for tr in trees for a in tr.actions if recent(a.started_at)), 6)
     retried = sum(1 for _, t in closed if t.attempts > 1)
@@ -202,5 +235,5 @@ def analyze(trees: list[GoalTree], days: int | None = 30, scope: str = "all", no
                  "without_ai": len(flagged) + len(repeated) + len(idle_checks), "missed": len(missed)},
         "failed": failed[:50], "what_goes_wrong": what_goes_wrong, "hard": hard[:30], "calibration": calibration,
         "without_ai": {"flagged": flagged[:30], "repeated": repeated[:20], "idle_checks": idle_checks},
-        "check_stats": check_stats, "missed": missed[:20],
+        "check_stats": check_stats, "missed": missed[:20], "context": context, "agent_history": agent,
     }

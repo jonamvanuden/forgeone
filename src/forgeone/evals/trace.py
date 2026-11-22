@@ -38,6 +38,10 @@ class AgentTrace(BaseModel):
     hit_step_limit: bool = False
     hit_cost_limit: bool = False
     stop_reason: str | None = Field(default=None, description="finished | step_limit | cost_limit | error")
+    context: dict[str, Any] = Field(default_factory=dict,
+                                    description="How the conversation was kept short: policy, per-call sizes, cache use.")
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     llm_calls: int = 0
     llm_retries: int = 0
     error: str | None = None

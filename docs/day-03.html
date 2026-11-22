@@ -41,6 +41,7 @@
   <li>The Control Room</li>
   <li>Commands and deployment</li>
   <li>Code map</li>
+  <li>Context: what each model call sees</li>
   <li>Test yourself</li>
   <li>What comes next</li>
 </ol>
@@ -631,6 +632,7 @@ forgeone eval report</code></pre>
     <tr><td><code>tools/</code></td><td>The browser and the five tools, with the address blocklist.</td></tr>
     <tr><td><code>evals/runner.py</code>, <code>variants.py</code></td><td>Running suites per variant, the gate, and <code>forgeone run</code>.</td></tr>
     <tr><td><code>store/migrations/003–005</code></td><td>Variants and labels; goals, milestones, tasks, actions and the knowledge views; playbook fields.</td></tr>
+    <tr><td><code>context/pack.py</code>, <code>history.py</code></td><td>The context manifest of every model call; shortening the agent's conversation and prompt caching.</td></tr>
     <tr><td><code>control_room/work_api.py</code></td><td>The API behind Goals, Needs you, the goal page and the task page.</td></tr>
   </tbody>
 </table>
@@ -638,7 +640,93 @@ forgeone eval report</code></pre>
 <p>Tests: 75, all without an API key or network. The model is replaced by a scripted fake, git by a local bare repository, the browser by a local web server.</p>
 
 <!-- ============================================================ 16 -->
-<h2><span class="chap">16</span>Test yourself</h2>
+<h2 class="new-page"><span class="chap">16</span>Context: what each model call sees</h2>
+<p>Storing tasks and logging every call is not the same as deciding <em>what each model call is given</em>. That decision is called context management, and from Day 3 it has its own package, <code>context/</code>.</p>
+<h3>The context manifest</h3>
+<p>Every model call of the work engine and the builder now builds its prompt from named parts with a <code>ContextPack</code>. The pack records a <strong>manifest</strong>, stored on the action:</p>
+<ul>
+  <li><strong>each part</strong> (instructions, task, acceptance criteria, the output of a dependency, the feedback of the last attempt, the output under review), with where it came from (a task id, "execute attempt 1") and its size in tokens;</li>
+  <li><strong>what was cut</strong>, and how many tokens were lost by cutting;</li>
+  <li><strong>what was left out on purpose</strong>, with the rule: a reviewer never sees the executor's reasoning, the builder never sees the eval suite, an executor sees only its direct dependencies;</li>
+  <li>the tokens <strong>really billed</strong>, next to the estimate.</li>
+</ul>
+<p>On the task page, every action has a <strong>Context</strong> fold-out with this list. On the Support page, <em>Context per kind of call</em> shows how much each kind of call gets, how often it is cut, and whether calls that were cut pass less often. That is how we will find out which context gives the best result for the least money, the same way we compare models.</p>
+<h3>Keeping the agent's conversation short</h3>
+<figure>
+<svg viewBox="0 0 860 270" xmlns="http://www.w3.org/2000/svg" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="12">
+  <text x="30" y="28" fill="#1c1633" font-weight="700" font-size="13">Before: every call re-sends every page</text>
+  <text x="470" y="28" fill="#1c1633" font-weight="700" font-size="13">Now: the last 3 in full, older ones as one line</text>
+  <rect x="30" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <text x="50" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 1</text>
+  <rect x="88" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="88" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="108" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 2</text>
+  <rect x="146" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="146" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="146" y="170" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="166" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 3</text>
+  <rect x="204" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="204" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="204" y="170" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="204" y="152" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="224" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 4</text>
+  <rect x="262" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="262" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="262" y="170" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="262" y="152" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="262" y="134" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="282" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 5</text>
+  <rect x="320" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="320" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="320" y="170" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="320" y="152" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="320" y="134" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="320" y="116" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="340" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 6</text>
+  <rect x="470" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <text x="490" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 1</text>
+  <rect x="528" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="528" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="548" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 2</text>
+  <rect x="586" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="586" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="586" y="170" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="606" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 3</text>
+  <rect x="644" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="644" y="188" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="644" y="170" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="644" y="152" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="664" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 4</text>
+  <rect x="702" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="702" y="201" width="40" height="3" rx="2" fill="#b9a6ff"/>
+  <rect x="702" y="183" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="702" y="165" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="702" y="147" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="722" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 5</text>
+  <rect x="760" y="206" width="40" height="14" rx="3" fill="#1d1340"/>
+  <rect x="760" y="201" width="40" height="3" rx="2" fill="#b9a6ff"/>
+  <rect x="760" y="196" width="40" height="3" rx="2" fill="#b9a6ff"/>
+  <rect x="760" y="178" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="760" y="160" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <rect x="760" y="142" width="40" height="16" rx="2" fill="#6c47ff"/>
+  <text x="780" y="236" text-anchor="middle" fill="#7d7699" font-size="10.5">call 6</text>
+  <g font-size="11" fill="#4a4366">
+    <rect x="30" y="248" width="12" height="10" rx="2" fill="#1d1340"/><text x="48" y="257">system prompt and task (cached)</text>
+    <rect x="250" y="248" width="12" height="10" rx="2" fill="#6c47ff"/><text x="268" y="257">a page in full (up to 8,000 characters)</text>
+    <rect x="520" y="248" width="12" height="10" rx="2" fill="#b9a6ff"/><text x="538" y="257">one line: "opened X, 7,900 characters; open again if needed"</text>
+  </g>
+</svg>
+<figcaption>What the model receives on each call of an agent that opens a page per step. The bar is the size of the prompt. Left, it grows with every page; right, it stops growing. The full text of every page stays in the trace, so the quote and citation checks still see everything.</figcaption>
+</figure>
+<p>An agent's conversation is sent again on every step. Without care, a 12-step run sends about 150,000 input tokens, mostly the same old pages. Two fixes in <code>context/history.py</code>:</p>
+<ul>
+  <li><strong>Shortening:</strong> the last 3 tool results stay in full; older results longer than 1,200 characters become one line that says what it was and how to get it back.</li>
+  <li><strong>Prompt caching:</strong> the tool list and the system prompt are the same on every step, so they are marked for Anthropic's prompt cache. Reading from the cache costs 10% of the normal input price; writing to it 125%. Both are now priced in the cost figures.</li>
+</ul>
+<p>Each agent run records how many results were shortened, how many tokens it sent, and how many it would have sent without shortening.</p>
+
+<!-- ============================================================ 17 -->
+<h2><span class="chap">17</span>Test yourself</h2>
 <ol>
   <li><strong>What is the difference between a task and an action?</strong> A task is a piece of work; an action is one attempt at one stage of it. One task usually has several actions.</li>
   <li><strong>Why are acceptance criteria written at planning time?</strong> So the reviewer judges against a fixed standard instead of one invented after seeing the result.</li>
@@ -646,17 +734,19 @@ forgeone eval report</code></pre>
   <li><strong>Publishing to main: when do you approve, and why then?</strong> Before it runs (a go-ahead), because a commit on main cannot be taken back.</li>
   <li><strong>A task predicted difficulty 3 passes on the first try within its estimate. What is its actual difficulty?</strong> 2: one point easier than predicted.</li>
   <li><strong>Where do you look to see whether Haiku is good enough for analyze tasks?</strong> The view <code>v_stage_knowledge</code>: the pass rate per task type, stage and model.</li>
+  <li><strong>Where do you see what a model call was given?</strong> In the Context fold-out of the action on the task page: every part, its source, its size, what was cut and what was left out by rule.</li>
   <li><strong>Why does a build use a playbook and not the planner?</strong> Its steps are always the same and its output has a fixed format, so a planning call would only add cost and risk.</li>
 </ol>
 
-<!-- ============================================================ 17 -->
-<h2><span class="chap">17</span>What comes next</h2>
+<!-- ============================================================ 18 -->
+<h2><span class="chap">18</span>What comes next</h2>
 <ol>
   <li><strong>The first real numbers.</strong> Run real goals and builds on the server and read <code>v_stage_knowledge</code> and <code>v_task_calibration</code>. This is the first time real Claude output goes through the checks; until now the tests used a scripted model.</li>
   <li><strong>Routing from data.</strong> Replace the difficulty threshold in <code>policy.route()</code> with the cheapest model whose measured pass rate is good enough for that task type.</li>
   <li><strong>Test and repair in the build.</strong> Add a milestone that runs the new spec on its own test cases; when they fail, send the failure back to the spec task as feedback.</li>
   <li><strong>Goals in the background.</strong> Today <code>goal run</code> runs in your terminal. A worker service will pick up goals by itself, with a lock so one goal never runs twice at the same time (that is not prevented yet).</li>
   <li><strong>Approving in the dashboard</strong>, once the Control Room has a login.</li>
+  <li><strong>Token budgets and memory.</strong> Budgets per model and kind of call, all feedback from every attempt, and lessons from earlier goals, all through <code>context/</code>; then context variants in the evals.</li>
   <li><strong>Act on the Support page.</strong> Turn tasks marked "might not need AI" into code steps, and drop or replace AI checks that never catch anything.</li>
 </ol>
 

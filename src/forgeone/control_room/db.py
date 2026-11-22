@@ -75,7 +75,7 @@ ORDER BY ts, id
 """
 
 RUN_CALLS = """
-SELECT id, ts, node, iteration, model, status, latency_ms, input_tokens, output_tokens,
+SELECT id, ts, node, iteration, model, status, latency_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
        stop_reason, error
 FROM llm_calls WHERE run_id = %(run_id)s ORDER BY ts, id
 """
@@ -152,7 +152,8 @@ FROM runs WHERE coalesce(name, 'forgeone.build') = 'forgeone.build'
 # tokens grouped so cost can be priced per model (Haiku is priced higher above 100k input)
 USAGE_BY_DAY = """
 SELECT date_trunc('day', ts)::date AS day, model, (input_tokens > 100000) AS long_prompt,
-       count(*) AS calls, coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout
+       count(*) AS calls, coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout,
+       coalesce(sum(cache_read_tokens), 0) AS cread, coalesce(sum(cache_write_tokens), 0) AS cwrite
 FROM llm_calls
 WHERE ts > now() - interval '14 days'
 GROUP BY 1, 2, 3
@@ -162,6 +163,7 @@ USAGE_BY_MODEL = """
 SELECT model, (input_tokens > 100000) AS long_prompt, count(*) AS calls,
        count(*) FILTER (WHERE status = 'error') AS errors,
        coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout,
+       coalesce(sum(cache_read_tokens), 0) AS cread, coalesce(sum(cache_write_tokens), 0) AS cwrite,
        round(avg(latency_ms)) AS avg_latency_ms
 FROM llm_calls
 WHERE ts > now() - interval '30 days'
@@ -203,14 +205,16 @@ ORDER BY a.name, a.ts
 
 COST_BY_RUN = """
 SELECT run_id, model, (input_tokens > 100000) AS long_prompt,
-       coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout
+       coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout,
+       coalesce(sum(cache_read_tokens), 0) AS cread, coalesce(sum(cache_write_tokens), 0) AS cwrite
 FROM llm_calls WHERE run_id = ANY(%(run_ids)s)
 GROUP BY 1, 2, 3
 """
 
 COST_BY_GOAL = f"""
 SELECT {GOAL_KEY} AS key, c.model, (c.input_tokens > 100000) AS long_prompt,
-       coalesce(sum(c.input_tokens), 0) AS tin, coalesce(sum(c.output_tokens), 0) AS tout
+       coalesce(sum(c.input_tokens), 0) AS tin, coalesce(sum(c.output_tokens), 0) AS tout,
+       coalesce(sum(c.cache_read_tokens), 0) AS cread, coalesce(sum(c.cache_write_tokens), 0) AS cwrite
 FROM llm_calls c JOIN runs r USING (run_id)
 WHERE coalesce(r.name, 'forgeone.build') = 'forgeone.build'
 GROUP BY 1, 2, 3
@@ -244,7 +248,8 @@ ORDER BY r.started_at DESC LIMIT 50
 
 AGENT_RUN_COSTS = """
 SELECT run_id, model, (input_tokens > 100000) AS long_prompt,
-       coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout
+       coalesce(sum(input_tokens), 0) AS tin, coalesce(sum(output_tokens), 0) AS tout,
+       coalesce(sum(cache_read_tokens), 0) AS cread, coalesce(sum(cache_write_tokens), 0) AS cwrite
 FROM llm_calls WHERE run_id = ANY(%(run_ids)s) GROUP BY 1, 2, 3
 """
 

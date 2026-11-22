@@ -43,6 +43,8 @@ class LLMCallLogger(BaseCallbackHandler):
                   latency_ms=round((time.perf_counter() - call.get("t0", time.perf_counter())) * 1000),
                   input_tokens=usage.get("input_tokens"),
                   output_tokens=usage.get("output_tokens"),
+                  cache_read_tokens=(usage.get("input_token_details") or {}).get("cache_read"),
+                  cache_write_tokens=(usage.get("input_token_details") or {}).get("cache_creation"),
                   stop_reason=out["stop_reason"],
                   prompt_payload=call.get("prompt_ref"), payload=ref,
                   _blobs={"prompt": call.get("prompt"), "response": out})

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import settings
-from ..llm.pricing import call_cost
+from ..llm.pricing import call_cost, usage_of
 
 PROMPTS = Path(__file__).parent / "prompts"
 
@@ -41,9 +41,9 @@ class Answer:
     duration_ms: int = 0
 
 
-def _usage(msg) -> tuple[int, int]:
-    u = getattr(msg, "usage_metadata", None) or {}
-    return int(u.get("input_tokens") or 0), int(u.get("output_tokens") or 0)
+def _cost(model: str, msg) -> tuple[float, int, int]:
+    tin, tout, cread, cwrite = usage_of(msg)
+    return call_cost(model, tin, tout, cread, cwrite) or 0.0, tin, tout
 
 
 class Brain:
@@ -84,8 +84,8 @@ class Brain:
         parsed = out.get("parsed") if isinstance(out, dict) else out
         if parsed is None:
             raise ValueError(f"{version}: model output did not match {schema.__name__}: {out.get('parsing_error')}")
-        tin, tout = _usage(out.get("raw") if isinstance(out, dict) else None)
-        return Answer(parsed, model, version, call_cost(model, tin, tout) or 0.0, tin, tout, ms)
+        cost, tin, tout = _cost(model, out.get("raw") if isinstance(out, dict) else None)
+        return Answer(parsed, model, version, cost, tin, tout, ms)
 
     def complete(self, prompt: str, model: str, version: str) -> Answer:
         """Free text answer for an already rendered prompt."""
@@ -94,8 +94,8 @@ class Brain:
         ms = round((time.perf_counter() - t0) * 1000)
         content = msg.content if isinstance(msg.content, str) else "".join(
             b.get("text", "") if isinstance(b, dict) else str(b) for b in msg.content)
-        tin, tout = _usage(msg)
-        return Answer(content.strip(), model, version, call_cost(model, tin, tout) or 0.0, tin, tout, ms)
+        cost, tin, tout = _cost(model, msg)
+        return Answer(content.strip(), model, version, cost, tin, tout, ms)
 
 
 def text_version(name: str, text: str) -> str:

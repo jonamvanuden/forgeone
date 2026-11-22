@@ -15,9 +15,10 @@ import logging
 import time
 from contextlib import contextmanager
 
+from ..context import ContextPack
 from ..observability import log_event, start_run
 from ..observability.context import iteration_var, node_var, run_id_var
-from .brain import Answer, Brain
+from .brain import Answer, Brain, prompt_version, template
 from .executors import CHECK_FAILURE, AgentExecutor, ExecResult, LLMExecutor
 from .model import FAILURE_REASONS, Action, Goal, GoalTree, Milestone, Task, now
 from .planner import bullets, milestones_from, numbered, task_types_text, tasks_from, workers_text
@@ -30,6 +31,7 @@ from .store import WorkStore, default_store
 
 OUTPUT_LIMIT = 30000      # characters of output a reviewer sees
 DEP_LIMIT = 4000          # characters of each dependency's output an executor sees
+MILESTONE_RESULT_LIMIT = 1500   # characters of each task result a milestone approver sees
 
 
 FIX = {"cited_urls_were_opened": "Cite only pages you opened in this attempt.",
@@ -223,10 +225,22 @@ class Engine:
                   actor=a.actor, cost_usd=a.cost_usd, failure_reason=a.failure_reason)
         return a
 
-    def _ask(self, tree: GoalTree, a: Action, schema, prompt: str, model: str, **values) -> Answer | None:
-        """A model call for an action; a failed call closes the action as failed (model_error)."""
+    @staticmethod
+    def _pack(purpose: str, model: str | None, **values) -> ContextPack:
+        """A pack from plain values: one manifest section per value."""
+        p = ContextPack(purpose, model)
+        for k, v in values.items():
+            p.add(k, v)
+        return p
+
+    def _ask(self, tree: GoalTree, a: Action, schema, prompt: str, model: str, pack: ContextPack) -> Answer | None:
+        """A model call for an action, with its context manifest; a failed call closes the action as
+        failed (model_error)."""
+        a.context = pack.manifest(template(prompt), prompt_version(prompt))
         try:
-            return self.brain.ask(schema, prompt, model, **values)
+            ans = self.brain.ask(schema, prompt, model, **pack.values)
+            a.context["tokens_billed"] = ans.tokens_in
+            return ans
         except Exception as e:  # noqa: BLE001
             self._finish(tree, a, "failed", reason=f"{type(e).__name__}: {e}", failure_reason="model_error",
                          model=model, feedback="The check itself failed; try again.")
@@ -283,10 +297,11 @@ class Engine:
                       input={"level": "goal", "plan_version": g.plan_version, "reason": reason,
                              "kept_milestones": [m.id for m in done]})
         with self._node("plan goal"):
-            ans = self._ask(tree, a, MilestonePlan, "plan_milestones", self.brain.planner_model,
-                            title=g.title, description=g.description or "(no further description)",
-                            success_criteria=bullets(g.success_criteria), constraints=bullets(g.constraints),
-                            workers=workers_text(g, tools), history=history)
+            ans = self._ask(tree, a, MilestonePlan, "plan_milestones", self.brain.planner_model, self._pack(
+                "plan_milestones", self.brain.planner_model,
+                title=g.title, description=g.description or "(no further description)",
+                success_criteria=bullets(g.success_criteria), constraints=bullets(g.constraints),
+                workers=workers_text(g, tools), history=history))
         if ans is None:
             raise RuntimeError(f"planning failed: {a.reason}")
         start = max((m.seq for m in tree.milestones), default=0) + 1
@@ -343,11 +358,11 @@ class Engine:
         g = tree.goal
         a = self._act(tree, "plan", milestone=m, actor=self.brain.planner_model, input={"level": "milestone"})
         with self._node(f"plan M{m.seq}"):
-            ans = self._ask(tree, a, TaskPlan, "plan_tasks", self.brain.planner_model,
-                            title=g.title, description=g.description or "", constraints=bullets(g.constraints),
-                            milestones=plan_text, code=f"M{m.seq}", m_title=m.title, m_description=m.description,
-                            done_when=bullets(m.done_when), workers=workers_text(g, tools),
-                            task_types=task_types_text())
+            ans = self._ask(tree, a, TaskPlan, "plan_tasks", self.brain.planner_model, self._pack(
+                "plan_tasks", self.brain.planner_model,
+                title=g.title, description=g.description or "", constraints=bullets(g.constraints),
+                milestones=plan_text, code=f"M{m.seq}", m_title=m.title, m_description=m.description,
+                done_when=bullets(m.done_when), workers=workers_text(g, tools), task_types=task_types_text()))
         if ans is None:
             raise RuntimeError(f"planning M{m.seq} failed: {a.reason}")
         tasks = tasks_from(ans.value.tasks, g, m, bool(tools))
@@ -362,11 +377,12 @@ class Engine:
         g = tree.goal
         a = self._act(tree, "plan", task=t, actor=self.brain.planner_model, input={"level": "task", "why": "difficulty 5"})
         with self._node(f"plan {t.code}"):
-            ans = self._ask(tree, a, TaskPlan, "split_task", self.brain.planner_model,
-                            title=g.title, constraints=bullets(g.constraints), m_code=f"M{m.seq}", m_title=m.title,
-                            code=t.code, t_title=t.title, t_description=t.description, t_input=t.input or "-",
-                            t_expected=t.expected_output, criteria=bullets(t.acceptance_criteria),
-                            workers=workers_text(g, tools), task_types=task_types_text())
+            ans = self._ask(tree, a, TaskPlan, "split_task", self.brain.planner_model, self._pack(
+                "split_task", self.brain.planner_model,
+                title=g.title, constraints=bullets(g.constraints), m_code=f"M{m.seq}", m_title=m.title,
+                code=t.code, t_title=t.title, t_description=t.description, t_input=t.input or "-",
+                t_expected=t.expected_output, criteria=bullets(t.acceptance_criteria),
+                workers=workers_text(g, tools), task_types=task_types_text()))
         if ans is None:                                   # keep it as one big task rather than stop planning
             return
         kids = tasks_from(ans.value.tasks, g, m, bool(tools), parent=t)
@@ -510,13 +526,15 @@ class Engine:
             m.status = "waiting"
             self.store.save(a, m)
             return "waiting"
-        results = "\n\n".join(f"## {t.code} {t.title} ({t.status})\n{_cut(t.output, 1500)}"
-                              for t in tree.tasks_of(m.id) if t.depth == 1)
+        pack = self._pack("approve_milestone", self.brain.judge_model, goal=g.title, code=f"M{m.seq}",
+                          title=m.title, description=m.description, done_when=bullets(m.done_when))
+        pack.join("results", [(f"## {t.code} {t.title} ({t.status})", t.id, t.output)
+                              for t in tree.tasks_of(m.id) if t.depth == 1], limit_each=MILESTONE_RESULT_LIMIT,
+                  name="task result")
+        pack.exclude("subtask outputs and earlier attempts", "a milestone is judged on its tasks' accepted results")
         a = self._act(tree, "approve", milestone=m, actor=self.brain.judge_model, input={"done_when": m.done_when})
         with self._node(f"approve M{m.seq}"):
-            ans = self._ask(tree, a, Approval, "approve_milestone", self.brain.judge_model, goal=g.title,
-                            code=f"M{m.seq}", title=m.title, description=m.description,
-                            done_when=bullets(m.done_when), results=results)
+            ans = self._ask(tree, a, Approval, "approve_milestone", self.brain.judge_model, pack)
         if ans is None:
             m.status, m.note = "failed", "milestone approval failed to run"
         else:
@@ -595,13 +613,24 @@ class Engine:
                 hook(StepContext(goal=tree.goal, tree=tree, task=t, brain=self.brain,
                                  deps=[d for d in (tree.task(i) for i in t.depends_on) if d], run_id=self.run_id))
 
-    def _context(self, tree: GoalTree, m: Milestone, t: Task) -> dict:
+    def _context(self, tree: GoalTree, m: Milestone, t: Task, model: str | None) -> ContextPack:
+        """What the executor sees. Recorded section by section in the execute action's manifest."""
         deps = [d for d in (tree.task(i) for i in t.depends_on) if d is not None]
-        return dict(goal=tree.goal.title, constraints=bullets(tree.goal.constraints), milestone=f"M{m.seq} {m.title}",
-                    code=t.code, title=t.title, description=t.description, input=t.input or "-",
-                    expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria),
-                    deps="\n\n".join(f"## {d.code} {d.title}\n{_cut(d.output, DEP_LIMIT)}" for d in deps) or "none",
-                    feedback=f"\n# Feedback on your previous attempt\n{t.feedback}\n" if t.feedback else "")
+        p = ContextPack("execute", model)
+        p.add("goal", tree.goal.title, required=True)
+        p.add("constraints", bullets(tree.goal.constraints))
+        p.add("milestone", f"M{m.seq} {m.title}")
+        for k, v in (("code", t.code), ("title", t.title), ("description", t.description), ("input", t.input or "-"),
+                     ("expected_output", t.expected_output)):
+            p.add(k, v, name="task", required=True)
+        p.add("criteria", bullets(t.acceptance_criteria), name="acceptance criteria", required=True)
+        p.join("deps", [(f"## {d.code} {d.title}", d.id, d.output) for d in deps], limit_each=DEP_LIMIT,
+               name="dependency output")
+        p.add("feedback", f"\n# Feedback on your previous attempt\n{t.feedback}\n" if t.feedback else "",
+              name="feedback", source=f"attempt {t.attempts - 1}" if t.feedback else None, required=True)
+        p.exclude("outputs of earlier attempts", "only the feedback on them is passed on")
+        p.exclude("tasks this one does not depend on", "only direct dependencies are included")
+        return p
 
     def _execute(self, tree: GoalTree, m: Milestone, t: Task, n: int) -> ExecResult:
         if t.executor == "step":
@@ -613,8 +642,15 @@ class Engine:
                       actor=f"step:{t.step}" if t.executor == "step" else f"{executor.name}:{t.model}",
                       actor_type="tool" if t.executor == "step" and not t.model else "ai",
                       input={"executor": executor.name, "depends_on": t.depends_on, "feedback": t.feedback})
+        pack = self._context(tree, m, t, t.model)
+        prompt = "execute_agent" if executor.name == "agent" else "execute"
+        a.context = pack.manifest(template(prompt), prompt_version(prompt)) if executor.name != "step" else {}
         with self._node(self._label("execute", t), n):
-            res = executor.run(t, self._context(tree, m, t))
+            res = executor.run(t, pack.values)
+        if res.context:                                    # steps bring their own manifest; agents add their history
+            a.context = {**a.context, **res.context} if a.context else res.context
+        if res.tokens_in and a.context:
+            a.context["tokens_billed"] = res.tokens_in
         over = bool(t.timeout_s and res.duration_ms > t.timeout_s * 1000)
         self._finish(tree, a, "passed" if res.ok else "failed", model=res.model, prompt_version=res.prompt_version,
                      cost_usd=res.cost_usd, tokens_in=res.tokens_in, tokens_out=res.tokens_out,
@@ -647,11 +683,16 @@ class Engine:
                         f"- automatic checks: {', '.join(c['name'] + (' passed' if c['passed'] else ' FAILED') for c in checks)}\n")
         a = self._act(tree, "verify", task=t, attempt=n, actor=self.brain.judge_model,
                       input={"criteria": len(t.acceptance_criteria), "evidence": bool(evidence)})
+        pack = ContextPack("verify", self.brain.judge_model)
+        pack.add("title", t.title, name="task", required=True)
+        pack.add("expected_output", t.expected_output, name="task", required=True)
+        pack.add("criteria", numbered(t.acceptance_criteria), name="acceptance criteria", required=True)
+        pack.add("evidence", evidence, name="evidence", source="run facts")
+        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True)
+        pack.fixed("failure_reasons", ", ".join(FAILURE_REASONS))
+        pack.exclude("the executor's reasoning, prompt and tool calls", "the reviewer judges the output, not the story")
         with self._node(self._label("verify", t), n):
-            ans = self._ask(tree, a, Verdict, "verify", self.brain.judge_model, title=t.title,
-                            expected_output=t.expected_output, criteria=numbered(t.acceptance_criteria),
-                            evidence=evidence, output=_cut(res.output, OUTPUT_LIMIT),
-                            failure_reasons=", ".join(FAILURE_REASONS))
+            ans = self._ask(tree, a, Verdict, "verify", self.brain.judge_model, pack)
         if ans is None:
             return a
         v = ans.value
@@ -663,10 +704,12 @@ class Engine:
 
     def _edge_test(self, tree: GoalTree, t: Task, n: int, res: ExecResult) -> Action:
         a = self._act(tree, "edge_test", task=t, attempt=n, actor=self.brain.judge_model)
+        pack = self._pack("edge_test", self.brain.judge_model, title=t.title, description=t.description,
+                          expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria))
+        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True)
+        pack.exclude("the executor's reasoning", "edge cases are tested against the output only")
         with self._node(self._label("edge_test", t), n):
-            ans = self._ask(tree, a, EdgeReport, "edge_test", self.brain.judge_model, title=t.title,
-                            description=t.description, expected_output=t.expected_output,
-                            criteria=bullets(t.acceptance_criteria), output=_cut(res.output, OUTPUT_LIMIT))
+            ans = self._ask(tree, a, EdgeReport, "edge_test", self.brain.judge_model, pack)
         if ans is None:
             return a
         r = ans.value
@@ -683,10 +726,12 @@ class Engine:
         reviews = "\n".join(f"- {a.kind}: {'passed' if a.status == 'passed' else 'failed'}. {a.reason or ''}"
                             for a in tree.actions_of(t.id) if a.attempt == n and a.kind in ("verify", "edge_test"))
         a = self._act(tree, "approve", task=t, attempt=n, actor=self.brain.judge_model)
+        pack = self._pack("approve", self.brain.judge_model, goal=tree.goal.title, code=t.code, title=t.title,
+                          expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria))
+        pack.add("reviews", reviews or "- none", name="reviews", source=f"attempt {n}")
+        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True)
         with self._node(self._label("approve", t), n):
-            ans = self._ask(tree, a, Approval, "approve", self.brain.judge_model, goal=tree.goal.title, code=t.code,
-                            title=t.title, expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria),
-                            reviews=reviews or "- none", output=_cut(res.output, OUTPUT_LIMIT))
+            ans = self._ask(tree, a, Approval, "approve", self.brain.judge_model, pack)
         if ans is None:
             return a
         v = ans.value

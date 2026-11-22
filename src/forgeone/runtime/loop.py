@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..context import HistoryPolicy, compact_history, with_cache
+from ..context.history import messages_tokens
+from ..context.pack import estimate_tokens
 from ..evals.trace import AgentTrace, ToolCall
 from ..llm import chat_model
-from ..llm.pricing import call_cost
+from ..llm.pricing import call_cost, usage_of
 from ..observability import log_event
 from ..spec import AgentSpec
 from ..tools import Browser, ToolContext, ToolResult, toolset
@@ -32,6 +35,7 @@ class RunConfig:
     prompt_suffix: str = ""
     max_llm_retries: int = 2
     retry_backoff_s: float = 2.0
+    history: HistoryPolicy = field(default_factory=HistoryPolicy)   # how the conversation is kept short
 
 
 def _text(content) -> str:
@@ -63,7 +67,10 @@ def run_agent(spec: AgentSpec, task: str, cfg: RunConfig, *, browser: Browser | 
     trace = AgentTrace(case_id=case_id, task=task, agent=agent or spec.name, variant=cfg.variant,
                        model=cfg.model, steps_limit=max_steps)
     bound = (llm or chat_model(cfg.model)).bind_tools([t.schema() for t in tools])
-    messages = [SystemMessage(spec.system_prompt + cfg.prompt_suffix + FINAL_REMINDER), HumanMessage(task)]
+    system = spec.system_prompt + cfg.prompt_suffix + FINAL_REMINDER
+    messages = [SystemMessage(with_cache(system, cfg.model, cfg.history)), HumanMessage(task)]
+    results: list[dict] = []                      # one entry per tool result in `messages`
+    sizes: list[dict] = []
     t0, cost, last_failed = time.perf_counter(), 0.0, False
     log_event("agent.start", agent=trace.agent, variant=cfg.variant, model=cfg.model, case_id=case_id,
               max_steps=max_steps, max_cost_usd=cfg.max_cost_usd, tools=[t.name for t in tools])
@@ -72,13 +79,21 @@ def run_agent(spec: AgentSpec, task: str, cfg: RunConfig, *, browser: Browser | 
             if cfg.max_cost_usd is not None and cost >= cfg.max_cost_usd:
                 trace.hit_cost_limit, trace.stop_reason = True, "cost_limit"
                 break
+            compact_history(messages, results, cfg.history)
+            sizes.append({"call": trace.llm_calls + 1, "messages": len(messages), "tokens_est": messages_tokens(messages),
+                          "saved_est": sum(estimate_tokens("x" * r["chars"]) - estimate_tokens("x" * r["stub_chars"])
+                                           for r in results if r["shortened"]),
+                          "full_results": sum(1 for r in results if not r["shortened"]),
+                          "shortened_results": sum(1 for r in results if r["shortened"])})
             ai = _invoke_with_retries(bound, messages, cfg, callbacks, trace)
             trace.llm_calls += 1
-            usage = getattr(ai, "usage_metadata", None) or {}
-            tin, tout = usage.get("input_tokens", 0) or 0, usage.get("output_tokens", 0) or 0
+            tin, tout, cread, cwrite = usage_of(ai)
+            sizes[-1]["tokens_billed"] = tin
             trace.tokens_in += tin
             trace.tokens_out += tout
-            cost += call_cost(cfg.model, tin, tout) or 0.0
+            trace.cache_read_tokens += cread
+            trace.cache_write_tokens += cwrite
+            cost += call_cost(cfg.model, tin, tout, cread, cwrite) or 0.0
             messages.append(ai)
             calls = list(getattr(ai, "tool_calls", None) or [])
             if not calls:
@@ -110,6 +125,8 @@ def run_agent(spec: AgentSpec, task: str, cfg: RunConfig, *, browser: Browser | 
                           duration_ms=ms, step=len(trace.tool_calls), recovery_attempt=last_failed)
                 last_failed = not res.ok
                 messages.append(ToolMessage(res.content, tool_call_id=tc["id"]))
+                results.append({"index": len(messages) - 1, "tool": name, "args": args, "chars": len(res.content),
+                                "shortened": False})
             if trace.hit_step_limit:
                 break
     except Exception as e:
@@ -117,11 +134,22 @@ def run_agent(spec: AgentSpec, task: str, cfg: RunConfig, *, browser: Browser | 
         log_event("agent.error", logging.ERROR, error=trace.error)
     trace.report = ctx.report
     trace.cost_usd = round(cost, 6)
+    full_resend = sum(s["tokens_est"] + s["saved_est"] for s in sizes)
+    trace.context = {
+        "policy": cfg.history.as_dict(), "calls": sizes[-40:],
+        "shortened_results": sum(1 for r in results if r["shortened"]),
+        "peak_tokens_est": max((s["tokens_est"] for s in sizes), default=0),
+        "sent_tokens_est": sum(s["tokens_est"] for s in sizes),
+        "without_shortening_est": full_resend,
+        "cache_read_tokens": trace.cache_read_tokens, "cache_write_tokens": trace.cache_write_tokens,
+    }
     trace.duration_ms = round((time.perf_counter() - t0) * 1000)
     attempts, successes = trace.recoveries
     log_event("agent.end", stop_reason=trace.stop_reason, tool_calls=len(trace.tool_calls),
               tool_errors=trace.tool_errors, recovery_attempts=attempts, recovery_successes=successes,
               llm_calls=trace.llm_calls, llm_retries=trace.llm_retries, cost_usd=trace.cost_usd,
               tokens_in=trace.tokens_in, tokens_out=trace.tokens_out,
+              cache_read_tokens=trace.cache_read_tokens, shortened_results=trace.context["shortened_results"],
+              sent_tokens_est=trace.context["sent_tokens_est"], without_shortening_est=full_resend,
               duration_ms=trace.duration_ms, has_report=trace.report is not None)
     return trace

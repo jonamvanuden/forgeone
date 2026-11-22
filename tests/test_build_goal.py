@@ -90,6 +90,10 @@ def test_build_runs_as_a_goal_and_publishes_a_branch(setup):
     assert first_verify.cost_usd == 0 and "untrusted_content_rule" in first_verify.reason
     assert "untrusted data" in [p for k, p in fake.prompts if k == "AgentSpec"][1]          # the fix went into the retry
     assert yaml.safe_load(spec.output)["name"] == "demo" and spec.actual_difficulty > spec.difficulty
+    ctx = tree.actions_of(spec.id)[0].context
+    assert ctx["purpose"] == "builder.spec" and [s["name"] for s in ctx["sections"]][:3] == ["instructions", "goal.md", "design"]
+    assert ctx["sections"][2]["source"] == next(t.id for t in tree.tasks if t.step == "builder.design")
+    assert "eval suite" in ctx["excluded"][0]["what"] and ctx["tokens_billed"] == 2000
 
     pub = next(t for t in tree.tasks if t.step == "builder.publish")
     assert pub.status == "done" and pub.cost_usd == 0 and "pushed" in pub.output

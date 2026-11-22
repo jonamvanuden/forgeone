@@ -736,6 +736,22 @@ function criteriaHTML(criteria, verdict) {
   }).join("")}</ul>`;
 }
 
+function contextHTML(c) {
+  if (!c || !c.sections) return "";
+  const rows = c.sections.map((s) => `<tr><td>${esc(s.name)}</td>
+    <td class="mono-s">${s.source ? (/^T-[0-9a-f]+$/.test(s.source) ? `<a href="#/t/${esc(s.source)}">${esc(s.source)}</a>` : esc(s.source)) : ""}</td>
+    <td class="r">${fmtInt(s.tokens)}</td>
+    <td>${s.status === "cut" ? `<span class="chip bad">cut, ${fmtInt(s.original_tokens - s.tokens)} lost</span>` : s.status === "empty" ? '<span class="muted">empty</span>' : ""}</td></tr>`).join("");
+  const h = c.agent;
+  const hist = h ? `<div class="ctx-agent">Agent conversation: ${fmtInt(h.calls?.length || 0)} model calls, about ${fmtTokens(h.sent_tokens_est)} tokens sent in total${
+      h.shortened_results ? `, instead of ${fmtTokens(h.without_shortening_est)}: ${fmtInt(h.shortened_results)} older results were shortened` : "; nothing was long enough to shorten"}${
+      h.cache_read_tokens ? `. ${fmtTokens(h.cache_read_tokens)} tokens read from the prompt cache` : ""}.</div>` : "";
+  return `<details><summary>Context: about ${fmtTokens(c.tokens_est)} tokens in ${fmtInt(c.sections.length)} parts${c.tokens_billed ? `, ${fmtTokens(c.tokens_billed)} billed` : ""}${c.cut ? `, <span class="warn">${fmtInt(c.cut)} cut</span>` : ""}</summary>
+    <table class="table ctx"><thead><tr><th>Part</th><th>From</th><th class="r">Tokens</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    ${c.excluded?.length ? `<ul class="plain ctx-ex">${c.excluded.map((e) => `<li><b>Left out:</b> ${esc(e.what)}, because ${esc(e.rule)}.</li>`).join("")}</ul>` : ""}
+    ${hist}</details>`;
+}
+
 function actionHTML(a) {
   const who = a.actor_type === "human" ? (a.status === "pending" ? "you" : a.actor) : a.actor_type === "tool" ? `automatic ${a.actor}` : a.actor;
   const st = a.status === "pending" ? "waiting" : a.status;
@@ -751,6 +767,7 @@ function actionHTML(a) {
     ${a.criteria?.length && a.kind !== "verify" ? `<details><summary>${a.kind === "edge_test" ? "Edge cases" : "Checks"} (${a.criteria.length})</summary>${criteriaHTML(a.criteria.map((c) => c.criterion), a.criteria)}</details>` : ""}
     ${a.kind === "verify" && a.criteria?.length ? `<details><summary>Criteria (${a.criteria.filter((c) => c.met).length} of ${a.criteria.length} met)</summary>${criteriaHTML(a.criteria.map((c) => c.criterion), a.criteria)}</details>` : ""}
     ${ev && ev.opened_urls ? `<details><summary>Evidence: ${fmtInt(ev.tool_calls)} tool calls, ${fmtInt(ev.opened_urls.length)} pages opened${ev.tool_errors ? `, ${fmtInt(ev.tool_errors)} tool errors` : ""}</summary><ul class="plain">${ev.opened_urls.map((u) => `<li class="mono-s">${esc(u)}</li>`).join("")}</ul></details>` : ""}
+    ${contextHTML(a.context)}
     ${text ? `<details><summary>Output of this attempt (${fmtInt(text.length)} characters)</summary><pre class="code">${esc(text)}</pre></details>` : ""}
     <div class="act-foot">${a.prompt_version ? `<span>prompt ${esc(a.prompt_version)}</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}${a.run_id ? `<a href="#/run/${esc(a.run_id)}">model calls of this run</a>` : ""}<span class="mono-s">${esc(a.id)}</span></div>
   </li>`;
@@ -910,6 +927,17 @@ function checkStats(rows) {
       <td class="r">${fmtInt(c.runs)}</td><td class="r">${fmtInt(c.caught)}</td><td class="r">${pctTxt(c.catch_rate)}</td><td class="r hide-sm">${esc(fmtUSD(c.cost_usd))}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
+function contextTable(rows, h) {
+  if (!rows.length) return `<div class="empty">No model calls with a context record in this period.</div>`;
+  const STAGE_LABEL = { plan: "planning", execute: "execute", verify: "verify", edge_test: "edge test", approve: "approve" };
+  return `<div class="scroll-x"><table class="table">
+    <thead><tr><th>Call</th><th class="r">Calls</th><th class="r">Tokens (est.)</th><th class="r hide-sm">Billed</th><th class="r">Cut</th><th class="r hide-sm">Passed when cut</th><th class="r hide-sm">Passed otherwise</th></tr></thead>
+    <tbody>${rows.map((c) => `<tr><td>${esc(STAGE_LABEL[c.stage] || c.stage)}</td><td class="r">${fmtInt(c.calls)}</td>
+      <td class="r">${fmtTokens(c.tokens_est)}</td><td class="r hide-sm">${c.tokens_billed != null ? fmtTokens(c.tokens_billed) : "–"}</td>
+      <td class="r">${pctTxt(c.cut_rate)}</td><td class="r hide-sm">${pctTxt(c.pass_when_cut)}</td><td class="r hide-sm">${pctTxt(c.pass_uncut)}</td></tr>`).join("")}</tbody></table></div>
+    ${h && h.runs ? `<div class="panel-body muted" style="font-size:12.5px">Agent runs: ${fmtInt(h.runs)}, ${fmtInt(h.shortened)} older tool results shortened; about ${fmtTokens(h.sent)} tokens sent instead of ${fmtTokens(h.without)}${h.without ? ` (${pctTxt(1 - h.sent / h.without)} less)` : ""}${h.cache_read ? `; ${fmtTokens(h.cache_read)} read from the prompt cache` : ""}.</div>` : ""}`;
+}
+
 async function viewSupport(q) {
   const days = ["7", "30", "90", "all"].includes(q.get("days")) ? q.get("days") : "30";
   const scope = q.get("scope") === "builds" ? "builds" : "all";
@@ -944,7 +972,8 @@ async function viewSupport(q) {
     <div class="grid g-1-1">
       ${panel(`Missed by the AI checks (${s.missed.length})`, "you rejected work the AI checks had passed", `<div class="panel-body">${missedList(s.missed)}</div>`)}
       ${panel("What each AI check is worth", "how often it catches a problem", checkStats(s.check_stats))}
-    </div>`;
+    </div>
+    ${panel("Context per kind of call", "how much each call gets, how often it is cut, and whether cutting hurts", contextTable(s.context || [], s.agent_history))}`;
   return true;
 }
 

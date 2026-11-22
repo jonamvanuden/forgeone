@@ -49,13 +49,15 @@ def _write_one(cur, ev: dict, blobs: dict | None) -> None:
     elif kind in ("llm.response", "llm.error"):
         cur.execute(
             """INSERT INTO llm_calls (event_id, ts, run_id, node, iteration, model, status,
-                   latency_ms, input_tokens, output_tokens, stop_reason, error, prompt, response)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   latency_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                   stop_reason, error, prompt, response)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (event_id) DO NOTHING""",
             (eid, ts, run_id, node, it, extra.get("model"),
              "ok" if kind == "llm.response" else "error",
              _int(extra.get("latency_ms")), _int(extra.get("input_tokens")),
-             _int(extra.get("output_tokens")), extra.get("stop_reason"), extra.get("error"),
+             _int(extra.get("output_tokens")), _int(extra.get("cache_read_tokens")) or 0,
+             _int(extra.get("cache_write_tokens")) or 0, extra.get("stop_reason"), extra.get("error"),
              _jsonb(blobs.get("prompt")), _jsonb(blobs.get("response"))),
         )
     elif kind == "decision":

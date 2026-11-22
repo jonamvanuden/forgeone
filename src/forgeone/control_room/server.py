@@ -32,7 +32,7 @@ def sum_costs(rows, key_field: str | None = None) -> dict:
     out: dict = {}
     for r in rows:
         k = r[key_field] if key_field else None
-        c = price(r["model"], r["long_prompt"], r["tin"], r["tout"])
+        c = price(r["model"], r["long_prompt"], r["tin"], r["tout"], r.get("cread", 0), r.get("cwrite", 0))
         slot = out.setdefault(k, {"cost": 0.0, "unpriced": False})
         if c is None:
             slot["unpriced"] = True
@@ -146,7 +146,7 @@ def api_run(request: Request):
     run["nodes"] = db.query(db.RUN_NODES, {"run_id": run_id})
     run["calls"] = db.query(db.RUN_CALLS, {"run_id": run_id})
     for c in run["calls"]:
-        c["cost"] = call_cost(c["model"], c["input_tokens"], c["output_tokens"])
+        c["cost"] = call_cost(c["model"], c["input_tokens"], c["output_tokens"], c.get("cache_read_tokens", 0), c.get("cache_write_tokens", 0))
     run["cost"] = sum(c["cost"] or 0 for c in run["calls"])
     run["decisions"] = db.query(db.RUN_DECISIONS, {"run_id": run_id})
     arts = []
@@ -231,7 +231,7 @@ def api_home(request: Request):
     unpriced = {"calls": 0, "models": set()}
     today = dt.date.today()
     for u in db.query(db.USAGE_BY_DAY):
-        c = price(u["model"], u["long_prompt"], u["tin"], u["tout"])
+        c = price(u["model"], u["long_prompt"], u["tin"], u["tout"], u.get("cread", 0), u.get("cwrite", 0))
         if c is None:  # never count unknown prices as free: report them
             unpriced["calls"] += u["calls"]
             unpriced["models"].add(u["model"] or "unknown")
@@ -252,7 +252,7 @@ def api_home(request: Request):
                                                         "priced": True, "avg_latency_ms": u["avg_latency_ms"]})
         m["calls"] += u["calls"]; m["errors"] += u["errors"]
         m["tokens_in"] += u["tin"]; m["tokens_out"] += u["tout"]
-        c = price(u["model"], u["long_prompt"], u["tin"], u["tout"])
+        c = price(u["model"], u["long_prompt"], u["tin"], u["tout"], u.get("cread", 0), u.get("cwrite", 0))
         if c is None:
             m["priced"] = False
         else:
@@ -300,7 +300,8 @@ def api_call(request: Request):
     call = db.one(db.CALL, {"id": int(request.path_params["call_id"])})
     if not call:
         raise HTTPException(404, "Call not found")
-    call["cost"] = call_cost(call["model"], call["input_tokens"], call["output_tokens"])
+    call["cost"] = call_cost(call["model"], call["input_tokens"], call["output_tokens"], call.get("cache_read_tokens", 0),
+                             call.get("cache_write_tokens", 0))
     return JSON(call)
 
 
