@@ -21,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 
 from ..config import settings
 from ..llm.pricing import PRICES, call_cost, price
-from . import db
+from . import db, work_api
 
 STATIC = Path(__file__).parent / "static"
 DOCS = settings().docs_dir   # project documents (HTML + PDF), served at /docs
@@ -89,7 +89,9 @@ def spec_changes(old: dict | None, new: dict | None) -> list[str]:
 
 # ------------------------------------------------------------------ API
 def api_overview(request: Request):
-    return JSON(db.one(db.OVERVIEW))
+    ov = dict(db.one(db.OVERVIEW) or {})
+    ov["needs_you"] = _safe(lambda: db.one(db.NEEDS_YOU)["n"], 0)   # 0 until migration 004 is applied
+    return JSON(ov)
 
 
 def _goals_with_cost() -> list[dict]:
@@ -165,7 +167,15 @@ def api_run(request: Request):
                      "changed": spec_changes(prev["body"], a["body"]) if prev else []})
     run["artifacts"] = arts
     run["events"] = db.query(db.RUN_EVENTS, {"run_id": run_id})
-    run["kind"] = "agent" if run.get("name") == "agent.run" else "build"
+    name = run.get("name") or ""
+    run["kind"] = "agent" if name == "agent.run" else "work" if name.startswith("goal.") else "build"
+    if run["kind"] == "work":
+        meta = run.get("meta") or {}
+        run["title"] = meta.get("title") or "Goal"
+        run["goal_id"] = meta.get("goal_id")
+        run["actions"] = _safe(lambda: db.query(db.WORK_ACTIONS, {"run_id": run["run_id"]}), [])
+        if not run.get("cost"):
+            run["cost"] = round(sum(a["cost_usd"] or 0 for a in run["actions"]), 6)
     run["labels"] = _safe(lambda: db.query(db.RUN_LABELS, {"run_id": run_id}), [])
     run["tool_calls"] = db.query(db.RUN_TOOL_CALLS, {"run_id": run_id})
     if run["kind"] == "agent":
@@ -353,6 +363,9 @@ routes = [
     Route("/api/errors", api_errors),
     Route("/api/docs", api_docs),
     Route("/api/quality", api_quality),
+    Route("/api/work", lambda r: JSON(work_api.api_work(r))),
+    Route("/api/work/goals/{goal_id}", lambda r: JSON(work_api.api_work_goal(r))),
+    Route("/api/work/tasks/{task_id}", lambda r: JSON(work_api.api_work_task(r))),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
     Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
     Route("/", index),

@@ -20,6 +20,7 @@ one responsibility and has its own README when it is not built yet.
 
 | Package | Owns | Status |
 |---|---|---|
+| `work/` | **How work is done, for every agent type.** Goal → milestones → tasks → actions: planner, policy (stages per risk, routing, estimates), engine (execute → verify → edge test → approve, retries with feedback, budgets, human approvals, replanning) | working |
 | `builder/` | goal → AgentSpec; later the test → judge → repair loop. Nodes, prompts (`prompts/*.md`), state | working |
 | `workspace/` | Agent repositories: registry (`agents.yaml`), readiness checks, publishing to `agent/` on a branch, scaffolding new agent repos | working |
 | `spec/` | Contracts: `AgentSpec`, the tool allowlist | working |
@@ -40,13 +41,16 @@ one responsibility and has its own README when it is not built yet.
 1. `spec`, `llm`, `config` and `observability` depend on nothing else in ForgeOne (except `config`).
 2. `builder`, `runtime` and `evals` may use those, never each other's internals.
    The builder talks to evals only through `evals` public functions (scorecard, gate).
-3. `control_room` only **reads** from the store. It never imports builder or runtime.
+3. `control_room` only **reads** from the store. It never imports builder or runtime, and never runs the work
+   engine; it reads goals through `work.store` and `work.views`.
 4. **The builder never reads an eval suite.** Suites live in the agent repo's `evals/` and are
    loaded only by `evals`. This keeps evaluation honest (Goodhart's law).
 5. **ForgeOne writes only inside an agent repo's `agent/` folder**, always via
    `workspace.AgentRepo.publish`, which refuses anything else.
 6. Every schema change is a new file in `store/migrations/`; applied files are never edited.
 7. Prompts are files, not strings in code, so prompt changes show up in diffs.
+8. `work` uses `runtime`, `tools` and the evals' checks to execute and verify tasks; nothing in
+   `runtime`, `tools` or `evals` imports `work`.
 
 ## Data flow of one build
 `forgeone build --agent voyagerone` → `workspace`: agent repo must be a clean `main`, pull
@@ -75,3 +79,29 @@ call goes to `llm_calls`. The `AgentTrace` goes through the checks → a verdict
    variant without hard failures and without a category regression is promoted.
 5. **Deterministic tools first.** Every tool is plain code (`deterministic=True`); the numbers
    show where a tool can replace model steps.
+
+## Data flow of one goal
+`forgeone goal new "..." --agent voyagerone` → `work.Engine.create`: checks the agent (fails before any
+tokens are spent) → plan: one model call breaks the goal into milestones (1–10, each with "done when"),
+one call per milestone breaks it into tasks (type, difficulty, risk, acceptance criteria, dependencies,
+estimates), and a task rated difficulty 5 is split into subtasks. `policy` adds to each task, with a
+stored reason: its stages, its approver, its model, its budget.
+
+`forgeone goal run G-...` → milestone by milestone, every task whose dependencies are done goes
+through its stages. Each attempt at a stage is one **Action** row (who, model, prompt version, cost,
+tokens, time, verdict, confidence, per-criterion results, feedback, failure reason):
+
+| Stage | Done by | Fails when |
+|---|---|---|
+| execute | the agent with its tools (research, read, extract) or one model call | the tool or model fails, the budget runs out |
+| verify | the automatic checks first (no model call when a hard check fails), then a reviewer model that sees the criteria and the output, never the executor's reasoning | any acceptance criterion is not met |
+| edge_test | a model that tests 2–4 edge cases | an edge case that matters is not handled |
+| approve | an AI approver (medium risk) or you (high risk, irreversible) | rejected |
+
+A failed stage sends its feedback into the next attempt (max 3, 2 for high risk). A task that runs out
+of attempts fails, tasks that depend on it are blocked, the milestone fails. Supervised goals stop for
+your approval at every milestone; autonomous goals get an AI approver and may replan twice.
+
+The knowledge views of migration 004 turn this into routing data: `v_stage_knowledge` (pass rate and
+cost per task type × stage × model), `v_task_calibration` (predicted vs. actual difficulty, cost and
+time per task type) and `v_failure_reasons`.

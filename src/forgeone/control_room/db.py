@@ -258,3 +258,16 @@ SELECT ts, event, fields->>'tool' AS tool, fields->'args' AS args, (fields->>'ok
        (fields->>'recovery_attempt')::boolean AS recovery_attempt
 FROM events WHERE run_id = %(run_id)s AND event IN ('tool.call', 'tool.error') ORDER BY ts, id
 """
+
+WORK_ACTIONS = """
+SELECT a.id, a.kind, a.attempt, a.status, a.actor, a.actor_type, a.cost_usd, a.duration_ms, a.started_at,
+       a.failure_reason, a.task_id, a.milestone_id, t.code, t.title, m.seq AS milestone_seq, m.title AS milestone_title
+FROM actions a LEFT JOIN tasks t ON t.id = a.task_id LEFT JOIN milestones m ON m.id = a.milestone_id
+WHERE a.run_id = %(run_id)s ORDER BY a.started_at
+"""
+
+# Work items that wait for a human decision: approvals, and goals that are paused or failed.
+NEEDS_YOU = """
+SELECT (SELECT count(*) FROM actions WHERE kind = 'approve' AND status = 'pending')
+     + (SELECT count(*) FROM goals WHERE status IN ('paused', 'failed')) AS n
+"""

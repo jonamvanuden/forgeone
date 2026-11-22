@@ -9,6 +9,11 @@
     forgeone eval report [--agent voyagerone]
     forgeone eval validate [--agent voyagerone]
     forgeone eval checks
+    forgeone goal new "title" [--description TEXT | --file FILE] [--agent NAME] [--criteria TEXT ...]
+                              [--constraint TEXT ...] [--budget USD] [--autonomy supervised|autonomous] [--run]
+    forgeone goal list | show ID | run ID [--max-tasks N] | replan ID --reason TEXT | budget ID USD | cancel ID
+    forgeone approve ID [--note TEXT]        (a task, a milestone, or a goal with one approval waiting)
+    forgeone reject ID --note TEXT
     forgeone control-room [--port 8501]
 """
 from __future__ import annotations
@@ -172,6 +177,129 @@ def _control_room(a):
     uvicorn.run("forgeone.control_room.server:app", host=a.host, port=a.port, proxy_headers=True)
 
 
+# ------------------------------------------------------------------ goals
+LETTER = {"execute": "E", "verify": "V", "edge_test": "T", "approve": "A"}
+MARK = {"passed": "✓", "failed": "✗", "pending": "?", "running": "…", "none": "·"}
+
+
+def _work():
+    from .work import Engine, PgStore
+
+    store = PgStore()
+    try:
+        store.goals()
+    except Exception as e:  # noqa: BLE001
+        if "goals" in str(e) and "exist" in str(e):
+            raise SystemExit("forgeone: the goals tables are missing. Run: forgeone db migrate")
+        raise
+    return store, Engine(store=store)
+
+
+def _usd(v) -> str:
+    return "–" if v is None else f"${v:.4f}" if v < 1 else f"${v:.2f}"
+
+
+def _print_tree(tree, actions: bool = False) -> None:
+    from .work.views import progress, stage_states, waiting_on_you
+
+    g = tree.goal
+    p = progress(tree)
+    budget = f" of {_usd(g.budget_usd)}" if g.budget_usd is not None else ""
+    print(f"\n{g.id}  {g.title}\n  {g.status.upper()}  plan v{g.plan_version}  {p['done']}/{p['tasks']} tasks done  "
+          f"spent {_usd(g.cost_usd)}{budget}  {g.autonomy}{'  agent ' + g.agent if g.agent else ''}")
+    if g.note:
+        print(f"  note: {g.note}")
+    for m in tree.active_milestones():
+        mp = progress(tree, m.id)
+        print(f"\n  M{m.seq}  {m.title}  [{m.status}]  {mp['done']}/{mp['tasks']} tasks  {_usd(m.cost_usd)}  {m.id}")
+        for t in tree.tasks_of(m.id):
+            pad = "  " * (t.depth - 1)
+            stages = " ".join(f"{LETTER[s['stage']]}{MARK[s['state']]}" for s in stage_states(tree, t))
+            diff = f"d{t.difficulty}" + (f"→{t.actual_difficulty:g}" if t.actual_difficulty else "")
+            print(f"    {pad}{t.code:<7}{t.title[:44]:<45}{t.type:<9}{diff:<8}{t.risk:<7}{stages:<16}"
+                  f"{t.status:<9}{_usd(t.cost_usd) if t.cost_usd else '':<9}{t.id}")
+            if t.status in ("failed", "blocked") and t.failure_detail:
+                print(f"    {pad}       ↳ {t.failure_reason}: {t.failure_detail[:110]}")
+            if actions:
+                for a in tree.actions_of(t.id):
+                    print(f"    {pad}       {a.attempt}. {a.kind:<10}{a.status:<8}{a.actor[:28]:<29}{_usd(a.cost_usd):<9}"
+                          f"{(a.reason or '')[:70]}")
+    wait = waiting_on_you(tree)
+    if wait:
+        print("\n  Waiting for you:")
+        for w in wait:
+            print(f"    {w['code']} {w['title']}:  forgeone approve {w['id']}   or   forgeone reject {w['id']} --note \"...\"")
+    print()
+
+
+def _goal(a):
+    from .work import Goal
+
+    store, engine = _work()
+    if a.action == "new":
+        if not a.title:
+            raise SystemExit("forgeone: give the goal a title: forgeone goal new \"...\"")
+        desc = a.description or ""
+        if a.file:
+            from pathlib import Path
+
+            desc = Path(a.file).read_text(encoding="utf-8")
+        goal = Goal(title=a.title, description=desc, agent=a.agent, agent_type=a.type,
+                    success_criteria=a.criteria or [], constraints=a.constraint or [], budget_usd=a.budget,
+                    autonomy=a.autonomy)
+        print(f"planning {goal.id} ...")
+        tree = engine.create(goal)
+        _print_tree(tree)
+        if a.run:
+            _print_tree(engine.run(goal.id, max_tasks=a.max_tasks))
+        else:
+            print(f"Start it with: forgeone goal run {goal.id}")
+        return
+    if a.action == "list":
+        goals = store.goals()
+        if not goals:
+            print("no goals yet: forgeone goal new \"...\"")
+        for g in goals:
+            from .work.views import progress
+
+            p = progress(store.load(g.id))
+            print(f"{g.id}  {g.status:<10}{p['done']:>3}/{p['tasks']:<4}{_usd(g.cost_usd):<10}{g.title[:70]}")
+        return
+    if not a.title:
+        raise SystemExit(f"forgeone: which goal? forgeone goal {a.action} G-xxxxxx")
+    from .work.approvals import normalize_id
+
+    gid = normalize_id(a.title)
+    if a.action == "show":
+        _print_tree(store.load(gid), actions=a.actions)
+    elif a.action == "run":
+        _print_tree(engine.run(gid, max_tasks=a.max_tasks))
+    elif a.action == "replan":
+        if not a.reason:
+            raise SystemExit("forgeone: say why: --reason \"...\"")
+        _print_tree(engine.plan(gid, reason=a.reason))
+    elif a.action in ("budget", "cancel"):
+        tree = store.load(gid)
+        g = tree.goal
+        if a.action == "budget":
+            if a.usd is None:
+                raise SystemExit("forgeone: forgeone goal budget G-xxxxxx 2.50")
+            g.budget_usd = a.usd
+            if g.status == "paused":
+                g.note = f"budget raised to ${a.usd:.2f}: continue with forgeone goal run {g.id}"
+        else:
+            g.status, g.note = "cancelled", "cancelled by you"
+        store.save(g)
+        print(f"{g.id}: {g.status}, budget {_usd(g.budget_usd)}")
+
+
+def _decide(a):
+    from .work import decide
+
+    store, _ = _work()
+    print(decide(store, a.id, approved=a.cmd == "approve", note=a.note))
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="forgeone", description="ForgeOne: build, evaluate and improve agents.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -217,6 +345,32 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--spec", default=None)
     e.set_defaults(fn=_eval)
 
+    go = sub.add_parser("goal", help="goals: new, list, show, run, replan, budget, cancel")
+    go.add_argument("action", choices=["new", "list", "show", "run", "replan", "budget", "cancel"])
+    go.add_argument("title", nargs="?", help="the goal title (new) or goal id (other actions)")
+    go.add_argument("usd", nargs="?", type=float, help="new budget in USD (budget)")
+    go.add_argument("--description", "-d", default=None)
+    go.add_argument("--file", default=None, help="read the description from a file (e.g. a goal.md)")
+    go.add_argument("--agent", default=None, help="registered agent that does the web tasks, e.g. voyagerone")
+    go.add_argument("--type", default="generic", choices=["builder", "discovery", "content", "generic"])
+    go.add_argument("--criteria", action="append", help="success criterion for the whole goal (repeatable)")
+    go.add_argument("--constraint", action="append", help="constraint (repeatable)")
+    go.add_argument("--budget", type=float, default=None, help="total budget in USD")
+    go.add_argument("--autonomy", default="supervised", choices=["supervised", "autonomous"],
+                    help="supervised: you approve every milestone; autonomous: an AI approver does, and it may replan")
+    go.add_argument("--run", action="store_true", help="start working right after planning")
+    go.add_argument("--max-tasks", type=int, default=None, help="stop after this many tasks")
+    go.add_argument("--reason", default=None, help="why you replan")
+    go.add_argument("--actions", action="store_true", help="show: list every action")
+    go.set_defaults(fn=_goal)
+
+    for name, hlp in (("approve", "approve a task or milestone that waits for you"),
+                      ("reject", "reject it, with a note on what must change")):
+        ap = sub.add_parser(name, help=hlp)
+        ap.add_argument("id")
+        ap.add_argument("--note", default=None, required=name == "reject")
+        ap.set_defaults(fn=_decide)
+
     c = sub.add_parser("control-room", help="run the dashboard")
     c.add_argument("--host", default="127.0.0.1")
     c.add_argument("--port", type=int, default=8501)
@@ -227,6 +381,8 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         a.fn(a)
+    except ValueError as e:                     # NotWaiting, missing notes, no plan
+        raise SystemExit(f"forgeone: {e}")
     except (WorkspaceError, KeyError, FileExistsError, FileNotFoundError) as e:
         msg = e.args[0] if isinstance(e, KeyError) and e.args else e
         raise SystemExit(f"forgeone: {msg}")

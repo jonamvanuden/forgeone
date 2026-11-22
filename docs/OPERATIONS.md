@@ -5,7 +5,7 @@ All commands from `~/ForgeOne` with the venv active: `source .venv/bin/activate`
 ## Deploy a change from GitHub
 ```bash
 cd ~/ForgeOne && git pull && pip install -e . -q && systemctl restart forgeone-dashboard
-forgeone db migrate                       # only needed when a migration was added; always safe
+forgeone db migrate                       # only needed when a migration was added; always safe (004 = goals)
 ```
 
 ## Agent repositories
@@ -30,6 +30,27 @@ forgeone db backfill                      # load runs/*/events.jsonl into Postgr
 forgeone db migrate                       # apply new schema migrations (safe to repeat)
 pytest -q                                 # unit tests, no API key needed
 ```
+
+## Goals (the main way to give ForgeOne work)
+```bash
+forgeone goal new "What does WHO advise on free sugars?" --agent voyagerone --budget 1 \
+     --criteria "A 150-word summary with the limits and a source" --constraint "Only official WHO sources"
+forgeone goal new "..." --file brief.md --autonomy autonomous --run   # plan and start right away
+forgeone goal list                         # all goals with progress and spend
+forgeone goal show G-xxxxxx [--actions]    # milestones, tasks, stages (E V T A), what waits for you
+forgeone goal run G-xxxxxx [--max-tasks 3] # work until done, a human approval, the budget or the limit
+forgeone approve T-xxxxxx [--note "..."]   # a task or milestone waiting for you (or the goal id if one waits)
+forgeone reject T-xxxxxx --note "use the 2015 guideline"   # runs again with your note as feedback
+forgeone goal replan G-xxxxxx --reason "M3 was the wrong approach"
+forgeone goal budget G-xxxxxx 2.50         # raise the budget of a paused goal, then goal run again
+forgeone goal cancel G-xxxxxx
+```
+Supervised (default): you approve each milestone, plus every high-risk task. Autonomous: an AI
+approver signs off milestones and the goal may replan itself twice. Without `--agent` there is no web
+access: tasks are done by plain model calls. Approvals never continue the goal by themselves: run
+`forgeone goal run` again. The dashboard's **Needs you** page lists everything waiting, with the command.
+Optional: `FORGEONE_STRONG_MODEL` (difficulty 4–5, default claude-sonnet-5-5), `FORGEONE_JUDGE_MODEL`
+(verify, edge test, approve; default the builder model).
 
 ## Running and evaluating agents
 One-time on the server: `pip install -e . && playwright install --with-deps chromium`.

@@ -49,7 +49,11 @@ function ago(s) {
   if (sec < 86400) return `${Math.floor(sec / 3600)} h ago`;
   return `${Math.floor(sec / 86400)} d ago`;
 }
-const STATUS_TEXT = { ok: "Passed", error: "Failed", running: "Running" };
+const STATUS_TEXT = {
+  ok: "Passed", error: "Failed", running: "Running", passed: "Passed", failed: "Failed", done: "Done",
+  pending: "Not started", planned: "Planned", waiting: "Needs you", paused: "Paused", blocked: "Blocked",
+  skipped: "Skipped", superseded: "Replaced", cancelled: "Cancelled",
+};
 const status = (s) => `<span class="status ${esc(s)}">${esc(STATUS_TEXT[s] || s || "Unknown")}</span>`;
 /** short name of a goal for compact places: "Build VoyagerOne: an agent..." -> "Build VoyagerOne" */
 const shortTitle = (t) => (String(t || "").split(/[:.]/)[0] || t).trim();
@@ -154,12 +158,12 @@ function spendChart(days) {
 
 /* ---------------- views ---------------- */
 function goalsList(goals) {
-  if (!goals.length) return `<div class="empty">No builds yet. Start one on the server with <code>python -m forgeone.graph</code> and it shows up here within seconds.</div>`;
+  if (!goals.length) return `<div class="empty">No builds yet. Start one on the server with <code>forgeone build --agent voyagerone</code> and it shows up here within seconds.</div>`;
   return `<ul class="goals">${goals
     .map(
       (g) => `<li class="goal-row">
       <div>
-        <h3><a href="#/goal/${esc(g.key)}">${esc(g.title)}</a></h3>
+        <h3><a href="#/build-goal/${esc(g.key)}">${esc(g.title)}</a></h3>
         <ul class="facts">
           <li><b>${fmtInt(g.builds)}</b> builds</li>
           <li class="ok"><b>${pct(g.passed, g.builds)}</b> passed</li>
@@ -221,7 +225,7 @@ async function viewHome() {
   const data = JSON.stringify(h);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
-  setCrumbs([{ label: "Overview" }]);
+  setCrumbs([{ label: "Builds" }]);
   const k = h.kpis;
   const nGoals = h.goals.length;
   const spend14 = h.days.reduce((a, d) => a + n(d.cost), 0);
@@ -230,8 +234,8 @@ async function viewHome() {
 
   main.innerHTML = `
     <div class="page-head"><div>
-      <h1>Overview</h1>
-      <p>ForgeOne is working on ${fmtInt(nGoals)} ${nGoals === 1 ? "goal" : "goals"}. ${k.last_build ? `The last build started ${esc(ago(k.last_build))}.` : "No builds yet."}${n(k.running) ? ` ${fmtInt(k.running)} running right now.` : ""}</p>
+      <h1>Builds</h1>
+      <p>The builder has built agents for ${fmtInt(nGoals)} ${nGoals === 1 ? "goal file" : "goal files"}. ${k.last_build ? `The last build started ${esc(ago(k.last_build))}.` : "No builds yet."}${n(k.running) ? ` ${fmtInt(k.running)} running right now.` : ""}</p>
     </div></div>
 
     <div class="grid g-kpi">
@@ -248,7 +252,7 @@ async function viewHome() {
     </div>
 
     <div class="grid g-2-1">
-      ${panel("Goals", `<a href="#/goals">See all</a>`, `<div class="panel-body flush">${goalsList(h.goals.slice(0, 6))}</div>`)}
+      ${panel("Build goals", `<a href="#/build-goals">See all</a>`, `<div class="panel-body flush">${goalsList(h.goals.slice(0, 6))}</div>`)}
       ${panel("Recent activity", "", `<div class="panel-body flush">${feedHTML(h.feed.slice(0, 7))}</div>`)}
     </div>
 
@@ -264,9 +268,9 @@ async function viewGoals() {
   const data = JSON.stringify(goals);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
-  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Goals" }]);
+  setCrumbs([{ label: "Builds", href: "#/builds" }, { label: "Build goals" }]);
   main.innerHTML = `
-    <div class="page-head"><div><h1>Goals</h1><p>Everything ForgeOne has been asked to build. Open a goal for its builds and spec versions, or click a bar to jump into a build.</p></div></div>
+    <div class="page-head"><div><h1>Build goals</h1><p>Every goal.md the builder has turned into an agent. Open a goal for its builds and spec versions, or click a bar to jump into a build.</p></div></div>
     ${panel(`${goals.length} ${goals.length === 1 ? "goal" : "goals"}`, "most recent first", `<div class="panel-body flush">${goalsList(goals)}</div>`)}`;
   return true;
 }
@@ -276,7 +280,7 @@ async function viewGoal(key) {
   const data = JSON.stringify(g);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
-  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Goals", href: "#/goals" }, { label: g.title }]);
+  setCrumbs([{ label: "Builds", href: "#/builds" }, { label: "Build goals", href: "#/build-goals" }, { label: g.title }]);
 
   const versions = g.specs.length
     ? `<ul class="versions">${g.specs
@@ -347,7 +351,7 @@ function daysFromRuns(runs) {
 }
 
 function timeline(nodes) {
-  if (!nodes.length) return `<div class="empty">No steps recorded for this build.</div>`;
+  if (!nodes.length) return `<div class="empty">No steps recorded for this run.</div>`;
   const t0 = Math.min(...nodes.map((x) => toDate(x.started).getTime()));
   const t1 = Math.max(...nodes.map((x) => toDate(x.ended).getTime()));
   const span = Math.max(t1 - t0, 1);
@@ -379,7 +383,7 @@ function diffHTML(diff) {
 }
 
 function artifactsHTML(arts) {
-  if (!arts.length) return panel("What it produced", "", `<div class="empty">This build produced no artifacts.</div>`);
+  if (!arts.length) return panel("What it produced", "", `<div class="empty">This run produced no artifacts.</div>`);
   return arts
     .map((a) => {
       const tab = state.artTab[a.id] || "current";
@@ -418,9 +422,12 @@ async function viewRun(runId, callId) {
   if (data !== state.lastJSON) {
     state.lastJSON = data;
     if (r.kind === "agent") {
-      setCrumbs([{ label: "Overview", href: "#/" }, { label: "Quality", href: "#/quality" }, { label: (r.title || "").slice(0, 60) }]);
+      setCrumbs([{ label: "Quality", href: "#/quality" }, { label: (r.title || "").slice(0, 60) }]);
       document.querySelectorAll("[data-nav]").forEach((a) => (a.dataset.nav === "quality" ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
-    } else setCrumbs([{ label: "Overview", href: "#/" }, { label: r.title, href: `#/goal/${r.goal_key}` }, { label: `Build ${fmtDate(r.started_at)}` }]);
+    } else if (r.kind === "work") {
+      setCrumbs([{ label: "Goals", href: "#/" }, { label: r.title, href: `#/g/${r.goal_id}` }, { label: `${r.name === "goal.plan" ? "Planning" : "Work session"} ${fmtDate(r.started_at)}` }]);
+      document.querySelectorAll("[data-nav]").forEach((a) => (a.dataset.nav === "work" ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+    } else setCrumbs([{ label: "Builds", href: "#/builds" }, { label: r.title, href: `#/build-goal/${r.goal_key}` }, { label: `Build ${fmtDate(r.started_at)}` }]);
     const calls = r.calls.length
       ? `<ul class="calls">${r.calls
           .map(
@@ -442,19 +449,19 @@ async function viewRun(runId, callId) {
               <div><div>${esc(d.reason || "")}</div>${chips ? `<div class="chips">${chips}</div>` : ""}</div></li>`;
           })
           .join("")}</ul>`
-      : `<div class="empty">No decisions were logged in this build.</div>`;
+      : `<div class="empty">No decisions were logged in this run.</div>`;
 
     const kpi = (label, value) => `<div class="panel kpi"><div class="label">${esc(label)}</div><div class="value" style="font-size:22px">${value}</div></div>`;
     const isAgent = r.kind === "agent";
     const labels = (r.labels || []).map((l) => `${labelChip(l.label, l.source)}${l.note ? ` <span class="sub" style="display:inline">${esc(l.note)}</span>` : ""}`).join("<br>");
     main.innerHTML = `
       <section class="panel hero">
-        <div class="hero-top"><div><h1 class="goal">${isAgent ? esc(r.title) : `Build of ${esc(fmtDate(r.started_at))}`}</h1>
+        <div class="hero-top"><div><h1 class="goal">${isAgent ? esc(r.title) : r.kind === "work" ? `${r.name === "goal.plan" ? "Planning" : "Work session"} of ${esc(fmtDate(r.started_at))}` : `Build of ${esc(fmtDate(r.started_at))}`}</h1>
           <div class="sub">${isAgent ? `${esc(r.agent || "agent")} run, variant ${esc(r.variant || "default")}${r.case_id && r.case_id !== "adhoc" ? `, eval case ${esc(r.case_id)}` : ""}, ${esc(fmtDate(r.started_at))}` : esc(r.title)}</div>
           <div class="mono">${esc(r.run_id)}</div>${labels ? `<div style="margin-top:10px">${labels}</div>` : ""}</div>
           <div>${status(r.status)}</div></div>
       </section>
-      ${r.error ? `<div class="alert" style="margin-top:20px"><b>This ${isAgent ? "run" : "build"} failed.</b> ${esc(r.error)}</div>` : ""}
+      ${r.error ? `<div class="alert" style="margin-top:20px"><b>This ${r.kind === "build" ? "build" : "run"} failed.</b> ${esc(r.error)}</div>` : ""}
       <div class="grid g-kpi">
         ${kpi("Duration", esc(fmtMs(r.duration_ms)))}
         ${kpi("Model calls", fmtInt(r.llm_calls))}
@@ -462,7 +469,8 @@ async function viewRun(runId, callId) {
         ${kpi("Cost", esc(fmtUSD(r.cost)))}
         ${kpi("Model", `<span class="text-value" title="${esc(r.model || "")}">${esc(r.model || "–")}</span>`)}
       </div>
-      ${isAgent ? panel(`Tool calls (${r.tool_calls.length})`, "what the agent did, in order", `<div class="panel-body flush">${toolCallsHTML(r.tool_calls)}</div>`)
+      ${r.kind === "work" ? panel(`Actions in this session (${r.actions.length})`, "click one to open its task", workActionsHTML(r.actions))
+        : isAgent ? panel(`Tool calls (${r.tool_calls.length})`, "what the agent did, in order", `<div class="panel-body flush">${toolCallsHTML(r.tool_calls)}</div>`)
                 : panel("Timeline", "each step ForgeOne ran, in order", timeline(r.nodes))}
       <div class="grid g-1-1">
         ${panel("Model calls", "open one to read the exact prompt and answer", `<div class="panel-body flush">${calls}</div>`)}
@@ -482,7 +490,7 @@ async function viewErrors() {
   const data = JSON.stringify(errs);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
-  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Errors" }]);
+  setCrumbs([{ label: "Home", href: "#/" }, { label: "Errors" }]);
   if (!errs.length) {
     main.innerHTML = `<div class="page-head"><div><h1>Errors</h1></div></div>${panel("All clear", "", `<div class="empty">No errors recorded. When a step or a model call fails, it shows up here with its traceback and a link to the build.</div>`)}`;
     return true;
@@ -501,6 +509,299 @@ async function viewErrors() {
           ${e.traceback ? `<pre class="code">${esc(e.traceback)}</pre>` : ""}</details>`
       )
       .join("")}</div>`)}`;
+  return true;
+}
+
+/* ---------------- work: goals -> milestones -> tasks -> actions ---------------- */
+const STAGE = { execute: ["E", "Execute"], verify: ["V", "Verify"], edge_test: ["T", "Edge test"], approve: ["A", "Approve"], plan: ["P", "Plan"] };
+const STAGE_STATE = { passed: "passed", failed: "failed", pending: "waiting for you", running: "running", none: "not reached" };
+const KIND_TEXT = { plan: "Plan", execute: "Execute", verify: "Verify", edge_test: "Edge test", approve: "Approve" };
+const ms = (m) => `M${m.seq}`;
+
+function cmd(text) {
+  return `<span class="cmd"><code>${esc(text)}</code><button type="button" class="copy" data-copy="${esc(text)}">Copy</button></span>`;
+}
+function stagePills(stages, container) {
+  if (container) return `<span class="muted" style="font-size:12.5px">split into subtasks</span>`;
+  return `<span class="stages">${stages.map((s) => {
+    const [l, name] = STAGE[s.stage];
+    const who = s.stage === "approve" && s.actor ? `, by ${s.actor === "human" ? "you" : s.actor}` : "";
+    return `<span class="stg ${esc(s.state)}" data-tip="${esc(`${name}: ${STAGE_STATE[s.state] || s.state}${who}`)}">${l}</span>`;
+  }).join("")}</span>`;
+}
+function track(milestones, { big = false } = {}) {
+  if (!milestones.length) return "";
+  return `<div class="track${big ? " big" : ""}" role="img" aria-label="Milestones: ${esc(milestones.map((m) => `${ms(m)} ${STATUS_TEXT[m.status] || m.status}`).join(", "))}">${milestones.map((m) => {
+    const p = m.tasks ? Math.round((n(m.done) / n(m.tasks)) * 100) : 0;
+    return `<span class="seg ${esc(m.status)}" data-tip="${esc(`${ms(m)} ${m.title}: ${fmtInt(m.done)} of ${fmtInt(m.tasks)} tasks, ${(STATUS_TEXT[m.status] || m.status).toLowerCase()}`)}"><i style="width:${m.status === "done" ? 100 : p}%"></i>${big ? `<b>${ms(m)}</b>` : ""}</span>`;
+  }).join("")}</div>`;
+}
+const diffText = (t) => `${esc(t.difficulty)}${t.actual_difficulty != null ? ` <span class="arrow">→</span> ${esc(Number(t.actual_difficulty).toFixed(1).replace(/\.0$/, ""))}` : ""}`;
+const budgetText = (g) => (g.budget_usd != null ? `${fmtUSD(g.cost_usd)} of ${fmtUSD(g.budget_usd)}` : fmtUSD(g.cost_usd));
+
+function nextStep(g) {
+  if (g.status === "paused" && /budget/.test(g.note || "")) return `forgeone goal budget ${g.id} 1.00`;
+  if (g.status === "paused") return `forgeone goal run ${g.id}`;
+  if (g.status === "failed") return `forgeone goal replan ${g.id} --reason "..."`;
+  if (g.status === "planned") return `forgeone goal run ${g.id}`;
+  return null;
+}
+
+function askList(inbox, attention) {
+  const items = [
+    ...inbox.map((w) => `<li class="ask">
+      <div class="ask-what"><span class="ask-kind">${w.kind === "task" ? `Approve task ${esc(w.code)}` : `Approve milestone ${esc(w.code)}`}</span>
+        <a href="${w.kind === "task" ? `#/t/${esc(w.id)}` : `#/g/${esc(w.goal_id)}`}"><b>${esc(w.title)}</b></a>
+        <div class="muted">${esc(w.goal)}, waiting ${esc(ago(w.since))}${w.risk === "high" ? ", high risk" : ""}</div></div>
+      <div class="ask-do">${cmd(`forgeone approve ${w.id}`)}${cmd(`forgeone reject ${w.id} --note "..."`)}</div></li>`),
+    ...attention.map((a) => `<li class="ask">
+      <div class="ask-what"><span class="ask-kind ${a.kind === "failed" ? "bad" : ""}">Goal ${a.kind === "failed" ? "failed" : "paused"}</span>
+        <a href="#/g/${esc(a.goal_id)}"><b>${esc(a.goal)}</b></a>
+        <div class="muted">${esc(a.note || "")}</div></div>
+      <div class="ask-do">${a.kind === "failed" ? cmd(`forgeone goal replan ${a.goal_id} --reason "..."`)
+        : /budget/.test(a.note || "") ? cmd(`forgeone goal budget ${a.goal_id} 1.00`) + cmd(`forgeone goal run ${a.goal_id}`)
+        : cmd(`forgeone goal run ${a.goal_id}`)}</div></li>`),
+  ];
+  return items.length ? `<ul class="asks">${items.join("")}</ul>` : `<div class="empty">Nothing waits for you.</div>`;
+}
+
+function goalCards(goals) {
+  if (!goals.length)
+    return `<div class="empty">No goals yet. Give ForgeOne one on the server:<br><br>${cmd('forgeone goal new "What does WHO advise on free sugars?" --agent voyagerone --budget 1')}</div>`;
+  return `<ul class="wgoals">${goals.map((g) => {
+    const p = g.progress;
+    const verb = { failed: "Stopped at", paused: "Paused at", waiting: "Waiting at", planned: "Starts with", cancelled: "Cancelled at" }[g.status] || "Now on";
+    const now = g.current
+      ? `${verb} ${ms(g.current)} of ${g.milestones.length}: ${esc(g.current.title)}`
+      : g.status === "done" ? `Finished ${esc(ago(g.finished_at))}` : "";
+    return `<li class="wgoal">
+      <div class="wg-head"><h3><a href="#/g/${esc(g.id)}">${esc(g.title)}</a></h3>${status(g.status)}</div>
+      <div class="wg-now">${now}${g.note && g.status !== "done" ? `<span class="wg-note">${esc(g.note)}</span>` : ""}</div>
+      ${track(g.milestones)}
+      <ul class="facts">
+        <li><b>${fmtInt(p.done)}</b> of ${fmtInt(p.tasks)} tasks done</li>
+        ${n(p.failed) + n(p.blocked) ? `<li class="fail"><b>${fmtInt(n(p.failed) + n(p.blocked))}</b> failed or blocked</li>` : ""}
+        ${g.waiting ? `<li class="wait"><b>${fmtInt(g.waiting)}</b> waiting for you</li>` : ""}
+        <li>spent <b>${esc(budgetText(g))}</b></li>
+        <li>${esc(g.autonomy)}${g.agent ? `, agent <b>${esc(g.agent)}</b>` : ""}</li>
+        <li>updated <b>${esc(ago(g.updated_at))}</b></li>
+      </ul></li>`;
+  }).join("")}</ul>`;
+}
+
+const notMigrated = (title) => `<div class="page-head"><div><h1>${esc(title)}</h1></div></div>
+  <div class="alert"><b>The database needs a migration.</b> Run this on the server: ${cmd("forgeone db migrate")}</div>`;
+
+async function viewWork() {
+  const w = await api("/api/work");
+  const data = JSON.stringify(w);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  setCrumbs([{ label: "Goals" }]);
+  if (!w.migrated) { main.innerHTML = notMigrated("Goals"); return true; }
+  const k = w.kpis;
+  const kpi = (icon, label, value, foot, cls = "") =>
+    `<div class="panel kpi ${cls}"><div class="label">${ICON[icon]}${esc(label)}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
+  const active = w.goals.filter((g) => !["done", "cancelled", "failed"].includes(g.status));
+  const closed = w.goals.filter((g) => ["done", "cancelled", "failed"].includes(g.status));
+  const ask = w.inbox.length + w.attention.length;
+  main.innerHTML = `
+    <div class="page-head"><div><h1>Goals</h1>
+      <p>${active.length ? `${fmtInt(active.length)} ${active.length === 1 ? "goal is" : "goals are"} in progress.` : "No goal in progress."}
+      ${ask ? ` <a href="#/inbox">${fmtInt(ask)} ${ask === 1 ? "thing needs" : "things need"} your decision.</a>` : " Nothing waits for you."}</p></div></div>
+    <div class="grid g-kpi">
+      ${kpi("live", "Goals in progress", fmtInt(k.active), `${fmtInt(w.goals.length)} in total`)}
+      ${kpi("time", "Needs you", fmtInt(k.needs_you), k.needs_you ? `<a href="#/inbox">open the inbox</a>` : "all clear", k.needs_you ? "attn" : "")}
+      ${kpi("ok", "Tasks done", fmtInt(k.done_7d), "this week")}
+      ${kpi("rate", "Right first time", k.first_try_rate == null ? "–" : `${Math.round(k.first_try_rate * 100)}<small>%</small>`, `of ${fmtInt(k.closed_30d)} tasks, last 30 days`)}
+      ${kpi("spend", "Spend", esc(fmtUSD(k.spend_7d)), "this week, all goals")}
+    </div>
+    ${ask ? panel("Needs your decision", `<a href="#/inbox">Open the inbox</a>`, `<div class="panel-body flush">${askList(w.inbox.slice(0, 3), w.attention.slice(0, 2))}</div>`) : ""}
+    ${panel("In progress", "click a goal for its milestones and tasks", `<div class="panel-body flush">${goalCards(active)}</div>`)}
+    ${closed.length ? panel("Finished, failed or cancelled", "", `<div class="panel-body flush">${goalCards(closed)}</div>`) : ""}`;
+  return true;
+}
+
+async function viewInbox() {
+  const w = await api("/api/work");
+  const data = JSON.stringify([w.inbox, w.attention, w.migrated]);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  setCrumbs([{ label: "Home", href: "#/" }, { label: "Needs you" }]);
+  if (!w.migrated) { main.innerHTML = notMigrated("Needs you"); return true; }
+  main.innerHTML = `
+    <div class="page-head"><div><h1>Needs you</h1>
+      <p>Work that stops until you decide. Approving or rejecting is done on the server; the goal continues the next time it runs.
+      A rejection needs a note: it goes to the next attempt as feedback.</p></div></div>
+    ${panel(`Approvals (${w.inbox.length})`, "oldest first", `<div class="panel-body flush">${askList(w.inbox, [])}</div>`)}
+    ${panel(`Goals that stopped (${w.attention.length})`, "paused on budget or a task limit, or failed", `<div class="panel-body flush">${w.attention.length ? askList([], w.attention) : '<div class="empty">None.</div>'}</div>`)}`;
+  return true;
+}
+
+function taskTable(tasks) {
+  if (!tasks.length) return `<div class="empty">No tasks.</div>`;
+  const rows = tasks.map((t) => `<tr data-href="#/t/${esc(t.id)}" class="${t.depth > 1 ? "sub" : ""} st-${esc(t.status)}">
+      <td class="tcode">${esc(t.code)}</td>
+      <td><a class="row-link" href="#/t/${esc(t.id)}">${esc(t.title)}</a><div class="show-sm">${status(t.status)}</div>
+        ${["failed", "blocked"].includes(t.status) && t.failure_detail ? `<div class="why">${esc(t.failure_reason || "")}: ${esc(t.failure_detail.slice(0, 140))}</div>` : ""}</td>
+      <td class="hide-sm"><span class="chip">${esc(t.type)}</span></td>
+      <td class="r hide-sm" data-tip="difficulty: predicted → actual">${diffText(t)}</td>
+      <td class="hide-sm"><span class="risk ${esc(t.risk)}">${esc(t.risk)}</span></td>
+      <td>${stagePills(t.stages, t.container)}</td>
+      <td class="r hide-sm">${t.container ? "" : `${fmtInt(t.attempts)}/${fmtInt(t.max_attempts)}`}</td>
+      <td class="r hide-sm">${t.cost_usd ? esc(fmtUSD(t.cost_usd)) : '<span class="muted">–</span>'}</td>
+      <td class="hide-sm">${status(t.status)}</td></tr>`).join("");
+  return `<div class="scroll-x"><table class="table tasks">
+    <thead><tr><th>#</th><th>Task</th><th class="hide-sm">Type</th><th class="r hide-sm">Difficulty</th><th class="hide-sm">Risk</th><th>Stages</th><th class="r hide-sm">Tries</th><th class="r hide-sm">Cost</th><th class="hide-sm">Status</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function milestoneHTML(m, current) {
+  const p = m.progress;
+  const open = m.status !== "done" && (current || ["waiting", "failed", "running"].includes(m.status));
+  const appr = m.approval;
+  return `<li class="ms ${esc(m.status)}${current ? " current" : ""}">
+    <div class="ms-dot" aria-hidden="true">${m.status === "done" ? "✓" : esc(ms(m))}</div>
+    <details class="ms-body" ${open ? "open" : ""}>
+      <summary>
+        <div class="ms-title"><span class="ms-code">${esc(ms(m))}</span><b>${esc(m.title)}</b>${status(m.status)}</div>
+        <div class="ms-meta">${fmtInt(p.done)} of ${fmtInt(p.tasks)} tasks done, ${esc(fmtUSD(m.cost_usd))}${m.note ? `<span class="why">${esc(m.note)}</span>` : ""}</div>
+        <div class="bar"><i style="width:${p.tasks ? Math.round((p.done / p.tasks) * 100) : 0}%"></i></div>
+      </summary>
+      <div class="ms-inner">
+        ${m.description ? `<p class="ms-desc">${esc(m.description)}</p>` : ""}
+        <div class="done-when"><span>Done when</span><ul>${m.done_when.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>
+        ${taskTable(m.tasks)}
+        ${appr ? `<div class="ms-appr">Milestone approval: ${status(appr.status === "pending" ? "waiting" : appr.status)} ${appr.actor_type === "human" ? (appr.status === "pending" ? "by you" : `by ${esc(appr.actor)}`) : `by ${esc(appr.actor)}`}${appr.reason ? `, ${esc(appr.reason)}` : ""}${appr.status === "pending" ? `<div style="margin-top:8px">${cmd(`forgeone approve ${m.id}`)}</div>` : ""}</div>` : ""}
+      </div>
+    </details></li>`;
+}
+
+async function viewWorkGoal(id) {
+  const d = await api(`/api/work/goals/${encodeURIComponent(id)}`);
+  const data = JSON.stringify(d);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  const g = d.goal, p = d.progress, s = d.stats;
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: g.title }]);
+  const cur = d.milestones.find((m) => m.status !== "done");
+  const step = nextStep(g);
+  const kpi = (label, value, foot = "") => `<div class="panel kpi"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
+  const spendMax = Math.max(...Object.values(d.spend).map(n), 1e-9);
+  const spend = Object.entries(d.spend).map(([k, v]) => `<li><span>${esc(KIND_TEXT[k])}</span><span class="hbar"><i style="width:${Math.round((n(v) / spendMax) * 100)}%"></i></span><b>${esc(fmtUSD(v))}</b></li>`).join("");
+  const fails = d.failures.length
+    ? `<ul class="fails">${d.failures.map((f) => `<li><b>${fmtInt(f.n)}</b><div><span class="chip">${esc(f.reason)}</span><div class="muted">${esc(f.means)}</div></div></li>`).join("")}</ul>`
+    : `<div class="empty">Nothing failed so far.</div>`;
+  const plans = d.plans.map((pl) => `<li><b>Plan v${esc(pl.version)}</b> <span class="muted">${esc(fmtDate(pl.at))}, ${esc(fmtUSD(pl.cost_usd))}</span>
+      ${pl.reason ? `<div><span class="muted">Why replanned:</span> ${esc(pl.reason)}</div>` : ""}<div class="muted">${esc(pl.reasoning || "")}</div></li>`).join("");
+  main.innerHTML = `
+    <section class="panel hero">
+      <div class="hero-top"><div>
+        <h1 class="goal">${esc(g.title)}</h1>
+        <div class="sub">${esc(g.autonomy === "supervised" ? "Supervised: you approve each milestone" : "Autonomous: an AI approver signs off milestones and may replan")}${g.agent ? `. Web work by ${esc(g.agent)}` : ""}. Plan v${esc(g.plan_version)}, created ${esc(fmtDate(g.created_at))}.</div>
+        ${g.success_criteria.length ? `<div class="hero-criteria"><span>Done when</span><ul>${g.success_criteria.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
+        ${g.description ? `<details><summary>Show the full description</summary><pre>${esc(g.description)}</pre></details>` : ""}
+        <div class="mono">${esc(g.id)}</div></div>
+        <div>${status(g.status)}</div></div>
+      ${track(d.milestones.map((m) => ({ ...m, ...m.progress })), { big: true })}
+    </section>
+    ${g.status === "waiting" ? "" : g.note && g.status !== "done" ? `<div class="notice ${g.status === "failed" ? "bad" : ""}"><b>${esc(STATUS_TEXT[g.status] || g.status)}.</b> ${esc(g.note)}${step ? `<div style="margin-top:8px">${cmd(step)}</div>` : ""}</div>` : (step ? `<div class="notice">Next step: ${cmd(step)}</div>` : "")}
+    ${d.waiting.length ? panel("Waiting for you", "", `<div class="panel-body flush">${askList(d.waiting, [])}</div>`) : ""}
+    <div class="grid g-kpi">
+      ${kpi("Progress", `${fmtInt(p.done)}<small>/${fmtInt(p.tasks)}</small>`, `${pct(p.done, p.tasks)} of tasks done`)}
+      ${kpi("Now on", cur ? esc(ms(cur)) : "–", cur ? esc(cur.title) : g.status === "done" ? "all milestones done" : "")}
+      ${kpi("Spent", esc(fmtUSD(g.cost_usd)), g.budget_usd != null ? `of ${esc(fmtUSD(g.budget_usd))} budget` : "no budget set")}
+      ${kpi("Right first time", s.closed ? `${Math.round((s.first_try / s.closed) * 100)}<small>%</small>` : "–", `${fmtInt(s.first_try)} of ${fmtInt(s.closed)} finished tasks`)}
+      ${kpi("Attempts", fmtInt(s.attempts), `${fmtInt(s.actions)} actions in total`)}
+    </div>
+    ${panel("Milestones", `<span class="legend">Stages: <b>E</b> execute, <b>V</b> verify, <b>T</b> edge test, <b>A</b> approve</span>`,
+      `<ol class="roadmap">${d.milestones.map((m) => milestoneHTML(m, cur && m.id === cur.id)).join("")}</ol>`)}
+    <div class="grid g-1-1">
+      ${panel("Where the money went", "by stage", `<div class="panel-body"><ul class="spend">${spend}</ul>${s.est_cost ? `<div class="muted" style="font-size:12.5px;margin-top:10px">The planner estimated ${esc(fmtUSD(s.est_cost))} for executing all tasks.</div>` : ""}</div>`)}
+      ${panel("What went wrong", "failed actions by reason", `<div class="panel-body flush">${fails}</div>`)}
+    </div>
+    ${panel("Plan history", d.superseded.length ? `${fmtInt(d.superseded.length)} milestones replaced` : "", `<div class="panel-body"><ul class="plans">${plans}</ul>
+      ${d.superseded.length ? `<details><summary>Replaced milestones</summary><ul class="plain">${d.superseded.map((m) => `<li>M${esc(m.seq)} ${esc(m.title)} <span class="muted">(plan v${esc(m.plan_version)})</span></li>`).join("")}</ul></details>` : ""}</div>`)}`;
+  return true;
+}
+
+function criteriaHTML(criteria, verdict) {
+  if (!criteria.length) return `<div class="empty">No acceptance criteria.</div>`;
+  return `<ul class="criteria">${criteria.map((c, i) => {
+    const v = verdict ? verdict.find((x) => x.criterion === c) || verdict[i] : null;
+    const st = v ? (v.met ? "met" : "unmet") : "open";
+    return `<li class="${st}"><span class="mark" aria-label="${st}">${st === "met" ? "✓" : st === "unmet" ? "✗" : "○"}</span><div>${esc(c)}${v?.note ? `<div class="muted">${esc(v.note)}</div>` : ""}</div></li>`;
+  }).join("")}</ul>`;
+}
+
+function actionHTML(a) {
+  const who = a.actor_type === "human" ? (a.status === "pending" ? "you" : a.actor) : a.actor_type === "tool" ? `automatic ${a.actor}` : a.actor;
+  const st = a.status === "pending" ? "waiting" : a.status;
+  const text = a.output?.text;
+  const ev = a.output?.evidence;
+  return `<li class="act ${esc(st)}">
+    <div class="act-head"><span class="act-kind">${esc(KIND_TEXT[a.kind] || a.kind)}</span>${status(st)}
+      <span class="muted">${esc(who)}${a.confidence != null ? `, confidence ${Math.round(a.confidence * 100)}%` : ""}</span>
+      <span class="act-num">${a.cost_usd ? esc(fmtUSD(a.cost_usd)) : ""}${a.duration_ms ? ` ${esc(fmtMs(a.duration_ms))}` : ""}</span></div>
+    ${a.reason ? `<div class="act-reason">${esc(a.reason)}</div>` : ""}
+    ${a.feedback ? `<div class="act-feedback"><span>Asked to fix</span>${esc(a.feedback)}</div>` : ""}
+    ${a.failure_reason ? `<div><span class="chip bad">${esc(a.failure_reason)}</span></div>` : ""}
+    ${a.criteria?.length && a.kind !== "verify" ? `<details><summary>${a.kind === "edge_test" ? "Edge cases" : "Checks"} (${a.criteria.length})</summary>${criteriaHTML(a.criteria.map((c) => c.criterion), a.criteria)}</details>` : ""}
+    ${a.kind === "verify" && a.criteria?.length ? `<details><summary>Criteria (${a.criteria.filter((c) => c.met).length} of ${a.criteria.length} met)</summary>${criteriaHTML(a.criteria.map((c) => c.criterion), a.criteria)}</details>` : ""}
+    ${ev && ev.opened_urls ? `<details><summary>Evidence: ${fmtInt(ev.tool_calls)} tool calls, ${fmtInt(ev.opened_urls.length)} pages opened${ev.tool_errors ? `, ${fmtInt(ev.tool_errors)} tool errors` : ""}</summary><ul class="plain">${ev.opened_urls.map((u) => `<li class="mono-s">${esc(u)}</li>`).join("")}</ul></details>` : ""}
+    ${text ? `<details><summary>Output of this attempt (${fmtInt(text.length)} characters)</summary><pre class="code">${esc(text)}</pre></details>` : ""}
+    <div class="act-foot">${a.prompt_version ? `<span>prompt ${esc(a.prompt_version)}</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}${a.run_id ? `<a href="#/run/${esc(a.run_id)}">model calls of this run</a>` : ""}<span class="mono-s">${esc(a.id)}</span></div>
+  </li>`;
+}
+
+async function viewTask(id) {
+  const d = await api(`/api/work/tasks/${encodeURIComponent(id)}`);
+  const data = JSON.stringify(d);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  const t = d.task, g = d.goal, m = d.milestone;
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: g.title, href: `#/g/${g.id}` }, { label: `${ms(m)}`, href: `#/g/${g.id}` }, { label: `${t.code} ${t.title}` }]);
+  const kpi = (label, value, foot = "") => `<div class="panel kpi"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
+  const attempts = {};
+  d.actions.forEach((a) => (attempts[a.attempt] = attempts[a.attempt] || []).push(a));
+  const timeline = Object.entries(attempts).map(([n_, acts]) =>
+    `<li class="attempt"><div class="attempt-head">${acts.every((a) => a.kind === "plan") ? "Planning" : `Attempt ${esc(n_)}`}</div><ul class="acts">${acts.map(actionHTML).join("")}</ul></li>`).join("");
+  const links = (rows, emptyText) => rows.length
+    ? `<ul class="links">${rows.map((x) => `<li><a href="#/t/${esc(x.id)}"><span class="tcode">${esc(x.code)}</span> ${esc(x.title)}</a>${status(x.status)}</li>`).join("")}</ul>`
+    : `<div class="empty">${emptyText}</div>`;
+  const container = !t.stages.length;
+  main.innerHTML = `
+    <section class="panel hero">
+      <div class="hero-top"><div>
+        <h1 class="goal"><span class="hero-code">${esc(t.code)}</span> ${esc(t.title)}</h1>
+        <div class="sub">${esc(t.type)} task, ${esc(t.risk)} risk${t.reversible ? "" : ", cannot be undone"}, in ${esc(ms(m))} ${esc(m.title)}${d.parent ? `, part of <a href="#/t/${esc(d.parent.id)}">${esc(d.parent.code)}</a>` : ""}</div>
+        <div class="mono">${esc(t.id)}</div></div>
+        <div>${status(t.status)}</div></div>
+      ${container ? "" : `<div class="hero-stages">${stagePills(d.stages, false)}<span>${d.stages.map((s) => `${STAGE[s.stage][1]}: ${STAGE_STATE[s.state]}`).join(", ")}</span></div>`}
+    </section>
+    ${d.waiting ? `<div class="notice"><b>Waiting for your approval</b> since ${esc(ago(d.waiting.started_at))}. Check the output below, then:<div class="cmds">${cmd(`forgeone approve ${t.id}`)}${cmd(`forgeone reject ${t.id} --note "what must change"`)}</div></div>` : ""}
+    ${["failed", "blocked"].includes(t.status) ? `<div class="notice bad"><b>${esc(STATUS_TEXT[t.status])}: ${esc(t.failure_reason || "")}.</b> ${esc(t.failure_detail || "")}</div>` : ""}
+    <div class="grid g-kpi">
+      ${kpi("Attempts", container ? "–" : `${fmtInt(t.attempts)}<small>/${fmtInt(t.max_attempts)}</small>`, container ? "see subtasks" : "allowed by policy")}
+      ${kpi("Cost", esc(fmtUSD(t.cost_usd)), t.est_cost_usd != null ? `estimated ${esc(fmtUSD(t.est_cost_usd))}` : "")}
+      ${kpi("Working time", esc(fmtMs(t.duration_ms)), t.est_minutes != null ? `estimated ${esc(fmtMs(t.est_minutes * 60000))}` : "")}
+      ${kpi("Difficulty", diffText(t), "predicted → actual")}
+      ${kpi("Model", `<span class="text-value">${esc(t.model || "–")}</span>`, esc(t.executor === "agent" ? `agent ${g.agent || ""}` : t.executor === "llm" ? "one model call" : "subtasks"))}
+    </div>
+    <div class="grid g-1-1">
+      ${panel("What to do", "", `<div class="panel-body prose-s">
+        <p>${esc(t.description)}</p>
+        <dl class="kv"><dt>Starts from</dt><dd>${esc(t.input || "–")}</dd><dt>Delivers</dt><dd>${esc(t.expected_output || "–")}</dd>
+        <dt>Why this model</dt><dd>${esc(t.routing_reason || "–")}</dd>
+        <dt>Budget</dt><dd>${t.budget_usd != null ? `${esc(fmtUSD(t.budget_usd))} per attempt` : "–"}${t.timeout_s ? `, ${esc(fmtMs(t.timeout_s * 1000))} time limit` : ""}</dd></dl></div>`)}
+      ${panel("Done when", d.last_verdict ? "result of the last verification" : "not verified yet", `<div class="panel-body">${criteriaHTML(t.acceptance_criteria, d.last_verdict)}</div>`)}
+    </div>
+    ${d.children.length ? panel(`Subtasks (${d.children.length})`, "this task was split because it was rated difficulty 5", taskTable(d.children)) : ""}
+    ${d.depends_on.length || d.dependents.length ? `<div class="grid g-1-1">
+      ${panel("Waits for", "", links(d.depends_on, "Nothing: it can start right away."))}
+      ${panel("Needed by", "", links(d.dependents, "No other task needs this one."))}</div>` : ""}
+    ${t.output ? panel("Output", t.status === "done" ? "the accepted result" : "the latest attempt", `<pre class="code" style="margin:0 20px 20px">${esc(t.output)}</pre>`) : ""}
+    ${panel("Activity", "every action, oldest first", d.actions.length ? `<ol class="timeline-work">${timeline}</ol>` : `<div class="empty">Nothing happened yet.</div>`)}`;
   return true;
 }
 
@@ -542,7 +843,7 @@ async function viewQuality() {
   const data = JSON.stringify(q);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
-  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Quality" }]);
+  setCrumbs([{ label: "Home", href: "#/" }, { label: "Quality" }]);
   if (!q.migrated) {
     main.innerHTML = `<div class="page-head"><div><h1>Quality</h1></div></div><div class="alert"><b>The database needs a migration.</b> Run <code>forgeone db migrate</code> on the server.</div>`;
     return true;
@@ -578,6 +879,20 @@ async function viewQuality() {
       <thead><tr><th>Started</th><th>Task</th><th class="hide-sm">Variant</th><th class="hide-sm">Kind</th><th>Verdict</th><th class="r hide-sm">Duration</th><th class="r">Cost</th></tr></thead>
       <tbody>${runRows}</tbody></table></div>` : `<div class="empty">No agent runs yet. On the server: <code>forgeone run "your research question"</code></div>`)}`;
   return true;
+}
+
+function workActionsHTML(acts) {
+  if (!acts.length) return `<div class="empty">No actions recorded in this session.</div>`;
+  return `<div class="scroll-x"><table class="table">
+    <thead><tr><th>Time</th><th>For</th><th>Action</th><th>Result</th><th class="hide-sm">By</th><th class="r">Cost</th></tr></thead><tbody>${acts.map((a) => {
+      const href = a.task_id ? `#/t/${esc(a.task_id)}` : "";
+      const what = a.task_id ? `<span class="tcode">${esc(a.code)}</span> ${esc(a.title)}` : a.milestone_id ? `M${esc(a.milestone_seq)} ${esc(a.milestone_title)}` : "the goal";
+      return `<tr ${href ? `data-href="${href}"` : ""}><td class="num">${esc(new Date(a.started_at).toLocaleTimeString("en-GB"))}</td>
+        <td>${href ? `<a class="row-link" href="${href}">${what}</a>` : what}</td>
+        <td>${esc(KIND_TEXT[a.kind] || a.kind)}${a.attempt > 1 ? ` <span class="muted">try ${esc(a.attempt)}</span>` : ""}</td>
+        <td>${status(a.status === "pending" ? "waiting" : a.status)}${a.failure_reason ? ` <span class="chip bad">${esc(a.failure_reason)}</span>` : ""}</td>
+        <td class="hide-sm muted">${esc(a.actor)}</td><td class="r">${a.cost_usd ? esc(fmtUSD(a.cost_usd)) : ""}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
 }
 
 function toolCallsHTML(calls) {
@@ -617,7 +932,7 @@ async function viewDocs() {
   const data = JSON.stringify(all);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
-  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Project docs" }]);
+  setCrumbs([{ label: "Home", href: "#/" }, { label: "Project docs" }]);
   const list = docs
     .map((m, i) => `<li class="doc-item">${dayBadge(m, i)}
       <div><h3><a href="#/docs/${esc(m.slug)}">${esc(m.title)}</a></h3><p>${esc(m.summary)}</p>
@@ -652,7 +967,7 @@ async function viewDoc(slug) {
   if (!meta) throw new Error("Document not found");
   if (state.lastJSON === `doc:${slug}`) return false;
   state.lastJSON = `doc:${slug}`;
-  setCrumbs([{ label: "Overview", href: "#/" }, { label: "Project docs", href: "#/docs" }, { label: meta.title }]);
+  setCrumbs([{ label: "Home", href: "#/" }, { label: "Project docs", href: "#/docs" }, { label: meta.title }]);
   const art = await loadDoc(meta);
   main.innerHTML = `
     <div class="reader-bar">
@@ -712,14 +1027,19 @@ function closeSheet(navigate = true) {
 /* ---------------- router ---------------- */
 function parse() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
-  if (parts[0] === "goal" && parts[1]) return { name: "goal", id: parts[1], nav: "goals" };
-  if (parts[0] === "run" && parts[1]) return { name: "run", id: parts[1], call: parts[2] === "call" ? parts[3] : null, nav: "goals" };  // nav refined after load
-  if (parts[0] === "goals") return { name: "goals", nav: "goals" };
+  if (parts[0] === "g" && parts[1]) return { name: "wgoal", id: parts[1], nav: "work" };
+  if (parts[0] === "t" && parts[1]) return { name: "wtask", id: parts[1], nav: "work" };
+  if (parts[0] === "inbox") return { name: "inbox", nav: "inbox" };
+  if (parts[0] === "builds") return { name: "home", nav: "builds" };
+  if (parts[0] === "build-goals") return { name: "goals", nav: "builds" };
+  if (parts[0] === "build-goal" && parts[1]) return { name: "goal", id: parts[1], nav: "builds" };
+  if (parts[0] === "goal" && parts[1]) return { name: "goal", id: parts[1], nav: "builds" };       // old links
+  if (parts[0] === "run" && parts[1]) return { name: "run", id: parts[1], call: parts[2] === "call" ? parts[3] : null, nav: "builds" };  // nav refined after load
   if (parts[0] === "quality") return { name: "quality", nav: "quality" };
   if (parts[0] === "docs" && parts[1]) return { name: "doc", id: parts[1], nav: "docs" };
   if (parts[0] === "docs") return { name: "docs", nav: "docs" };
   if (parts[0] === "errors") return { name: "errors", nav: "errors" };
-  return { name: "home", nav: "home" };
+  return { name: "work", nav: "work" };
 }
 async function render({ quiet = false } = {}) {
   const route = parse();
@@ -731,11 +1051,15 @@ async function render({ quiet = false } = {}) {
     if (route.name === "goal") await viewGoal(route.id);
     else if (route.name === "run") await viewRun(route.id, route.call);
     else if (route.name === "goals") await viewGoals();
+    else if (route.name === "home") await viewHome();
+    else if (route.name === "wgoal") await viewWorkGoal(route.id);
+    else if (route.name === "wtask") await viewTask(route.id);
+    else if (route.name === "inbox") await viewInbox();
     else if (route.name === "quality") await viewQuality();
     else if (route.name === "docs") await viewDocs();
     else if (route.name === "doc") await viewDoc(route.id);
     else if (route.name === "errors") await viewErrors();
-    else await viewHome();
+    else await viewWork();
     if (!sameView && !quiet) { window.scrollTo(0, 0); main.focus({ preventScroll: true }); }
     $("#live").classList.remove("stale");
     $("#updated").textContent = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -752,6 +1076,9 @@ async function refreshBadge() {
     const b = $("#err-badge");
     b.hidden = !n(ov.errors_24h);
     b.textContent = fmtInt(ov.errors_24h);
+    const ib = $("#inbox-badge");
+    ib.hidden = !n(ov.needs_you);
+    ib.textContent = fmtInt(ov.needs_you);
   } catch { /* shown by the live indicator */ }
 }
 
@@ -763,6 +1090,11 @@ document.addEventListener("click", (e) => {
   if (call && state.route?.name === "run") { location.hash = `#/run/${state.route.id}/call/${call.dataset.call}`; return; }
   const tab = e.target.closest("[data-art]");
   if (tab) { state.artTab[tab.dataset.art] = tab.dataset.tab; state.lastJSON = ""; render({ quiet: true }); return; }
+  const cp = e.target.closest("[data-copy]");
+  if (cp) {
+    navigator.clipboard?.writeText(cp.dataset.copy).then(() => { cp.textContent = "Copied"; setTimeout(() => (cp.textContent = "Copy"), 1500); });
+    return;
+  }
   const row = e.target.closest("tr[data-href]");
   if (row && !e.target.closest("a")) { location.hash = row.dataset.href; return; }
 });
