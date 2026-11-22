@@ -596,8 +596,8 @@ const notMigrated = (title) => `<div class="page-head"><div><h1>${esc(title)}</h
   <div class="alert"><b>The database needs a migration.</b> Run this on the server: ${cmd("forgeone db migrate")}</div>`;
 
 async function viewWork() {
-  const w = await api("/api/work");
-  const data = JSON.stringify(w);
+  const [w, acts] = await Promise.all([api("/api/work"), api("/api/actions").catch(() => null)]);
+  const data = JSON.stringify([w, acts]);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
   setCrumbs([{ label: "Goals" }]);
@@ -611,7 +611,8 @@ async function viewWork() {
   main.innerHTML = `
     <div class="page-head"><div><h1>Goals</h1>
       <p>${active.length ? `${fmtInt(active.length)} ${active.length === 1 ? "goal is" : "goals are"} in progress.` : "No goal in progress."}
-      ${ask ? ` <a href="#/inbox">${fmtInt(ask)} ${ask === 1 ? "thing needs" : "things need"} your decision.</a>` : " Nothing waits for you."}</p></div></div>
+      ${ask ? ` <a href="#/inbox">${fmtInt(ask)} ${ask === 1 ? "thing needs" : "things need"} your decision.</a>` : " Nothing waits for you."}</p></div>
+      <div class="head-actions"><a class="btn" href="#/new?kind=build">Build an agent</a><a class="btn primary" href="#/new">New goal</a></div></div>
     <div class="grid g-kpi">
       ${kpi("live", "Goals in progress", fmtInt(k.active), `${fmtInt(w.goals.length)} in total`)}
       ${kpi("time", "Needs you", fmtInt(k.needs_you), k.needs_you ? `<a href="#/inbox">open the inbox</a>` : "all clear", k.needs_you ? "attn" : "")}
@@ -620,6 +621,7 @@ async function viewWork() {
       ${kpi("spend", "Spend", esc(fmtUSD(k.spend_7d)), "this week, all goals")}
     </div>
     ${ask ? panel("Needs your decision", `<a href="#/inbox">Open the inbox</a>`, `<div class="panel-body flush">${askList(w.inbox.slice(0, 3), w.attention.slice(0, 2))}</div>`) : ""}
+    ${acts && acts.jobs.length ? panel("Started from the dashboard", acts.jobs.some((j) => j.state === "running") ? "running now and recent" : "recent", `<div class="panel-body flush">${jobsList(acts.jobs.slice(0, 5))}</div>`) : ""}
     ${panel("In progress", "click a goal for its milestones and tasks", `<div class="panel-body flush">${goalCards(active)}</div>`)}
     ${closed.length ? panel("Finished, failed or cancelled", "", `<div class="panel-body flush">${goalCards(closed)}</div>`) : ""}`;
   return true;
@@ -681,8 +683,9 @@ function milestoneHTML(m, current) {
 }
 
 async function viewWorkGoal(id) {
-  const d = await api(`/api/work/goals/${encodeURIComponent(id)}`);
-  const data = JSON.stringify(d);
+  const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), api("/api/actions").catch(() => null)]);
+  const job = acts?.jobs.find((j) => j.goal_id === id && j.state === "running");
+  const data = JSON.stringify([d, acts?.enabled, job?.id, !!getToken()]);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
   const g = d.goal, p = d.progress, s = d.stats;
@@ -708,6 +711,7 @@ async function viewWorkGoal(id) {
         <div>${status(g.status)}</div></div>
       ${track(d.milestones.map((m) => ({ ...m, ...m.progress })), { big: true })}
     </section>
+    ${runButton(g, acts, job)}
     ${g.status === "waiting" ? "" : g.note && g.status !== "done" ? `<div class="notice ${g.status === "failed" ? "bad" : ""}"><b>${esc(STATUS_TEXT[g.status] || g.status)}.</b> ${esc(g.note)}${step ? `<div style="margin-top:8px">${cmd(step)}</div>` : ""}</div>` : (step ? `<div class="notice">Next step: ${cmd(step)}</div>` : "")}
     ${d.waiting.length ? panel("Waiting for you", "", `<div class="panel-body flush">${askList(d.waiting, [])}</div>`) : ""}
     <div class="grid g-kpi">
@@ -1197,6 +1201,135 @@ function closeSheet(navigate = true) {
   lastFocus?.focus?.();
 }
 
+/* ---------------- actions: start work from the dashboard ---------------- */
+const TOKEN_KEY = "forgeone.actionToken";
+const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; } };
+const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch { /* private mode */ } };
+
+async function post(path, body, token = getToken()) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", "X-ForgeOne-Token": token }, body: JSON.stringify(body || {}) });
+  const out = await res.json().catch(() => ({}));
+  if (res.status === 401) setToken("");
+  if (!res.ok) throw new Error(out.error || `${res.status} ${res.statusText}`);
+  return out;
+}
+
+const JOB_STATE = { running: "Running", finished: "Finished", stopped: "Stopped with an error", ended: "Ended" };
+const jobStatus = (j) => `<span class="status ${j.state === "running" ? "running" : j.state === "finished" ? "done" : "failed"}">${esc(JOB_STATE[j.state] || j.state)}</span>`;
+function jobsList(jobs) {
+  if (!jobs.length) return `<div class="empty">Nothing started from the dashboard yet.</div>`;
+  return `<ul class="jobs">${jobs.map((j) => `<li>
+      <div><a href="#/job/${esc(j.id)}"><b>${esc(j.kind === "build" ? j.title : j.kind === "run" ? `Continue: ${j.title}` : j.title)}</b></a>
+        <div class="muted">${esc(fmtDate(j.started_at))}${j.budget ? `, budget ${esc(fmtUSD(j.budget))}` : ""}${j.goal_id ? ` · <a href="#/g/${esc(j.goal_id)}">open the goal</a>` : ""}</div></div>
+      ${jobStatus(j)}</li>`).join("")}</ul>`;
+}
+
+function tokenField(a) {
+  if (!a.enabled) return `<div class="alert"><b>Starting work from the dashboard is switched off.</b> On the server, add
+      <code>FORGEONE_ACTION_TOKEN=</code> with a password of 16 or more characters to <code>~/ForgeOne/.env</code>, then
+      ${cmd("systemctl restart forgeone-dashboard")}</div>`;
+  return getToken()
+    ? `<div class="field"><span class="lbl">Action password</span><div class="muted">Saved in this browser. <button type="button" class="linkish" data-forget-token>Forget it</button></div></div>`
+    : `<label class="field"><span class="lbl">Action password</span><input type="password" name="token" autocomplete="current-password" required minlength="16">
+       <span class="help">FORGEONE_ACTION_TOKEN from the server's .env. Saved in this browser after it works.</span></label>`;
+}
+
+async function viewNewGoal(q) {
+  if (state.lastJSON === "form") return false;              // never redraw a form someone is typing in
+  const a = await api("/api/actions");
+  state.lastJSON = "form";
+  const kind = q?.get("kind") === "build" ? "build" : "goal";
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: kind === "build" ? "Build an agent" : "New goal" }]);
+  const agentOpts = (blank) => `${blank ? `<option value="">None: plain model calls, no web</option>` : ""}${a.agents.map((x) => `<option ${x === "voyagerone" ? "selected" : ""}>${esc(x)}</option>`).join("")}`;
+  const cap = fmtUSD(a.max_budget);
+  const goalFields = `
+      <label class="field"><span class="lbl">Goal</span><input name="title" required maxlength="300" placeholder="What does WHO advise on free sugars, in grams?"></label>
+      <label class="field"><span class="lbl">Description <i>optional</i></span><textarea name="description" rows="5" maxlength="20000" placeholder="Background, what you want to get out of it, sources to prefer…"></textarea></label>
+      <div class="field-row">
+        <label class="field"><span class="lbl">Done when <i>optional, one per line</i></span><textarea name="criteria" rows="3" placeholder="A 150-word summary with the limits and a source"></textarea></label>
+        <label class="field"><span class="lbl">Constraints <i>optional, one per line</i></span><textarea name="constraints" rows="3" placeholder="Only official WHO sources"></textarea></label>
+      </div>
+      <div class="field-row three">
+        <label class="field"><span class="lbl">Agent for web work</span><select name="agent">${agentOpts(true)}</select></label>
+        <label class="field"><span class="lbl">Who approves milestones</span><select name="autonomy">
+          <option value="supervised">You (supervised)</option><option value="autonomous">An AI approver (autonomous)</option></select></label>
+        <label class="field"><span class="lbl">Context</span><select name="context">
+          <option value="lean">Lean: half the tokens, no memory</option><option value="default" selected>Default</option><option value="rich">Rich: more tokens and lessons</option></select></label>
+      </div>`;
+  const buildFields = `
+      <div class="field-row">
+        <label class="field"><span class="lbl">Agent to build</span><select name="agent" required>${agentOpts(false)}</select></label>
+        <label class="field"><span class="lbl">When the build passes</span><select name="publish">
+          <option value="branch">Push a branch for review (forgeone/&lt;run-id&gt;)</option><option value="none">Don't touch the repository (dry run)</option></select></label>
+      </div>
+      <label class="field"><span class="lbl">Instructions <i>optional</i></span><textarea name="description" rows="6" maxlength="20000" placeholder="Leave empty to use goal.md from the agent's repository."></textarea>
+        <span class="help">The repository must be a clean main; it is pulled before any tokens are spent.</span></label>`;
+  main.innerHTML = `
+    <div class="page-head"><div><h1>${kind === "build" ? "Build an agent" : "New goal"}</h1>
+      <p>${kind === "build" ? "The builder designs the agent, writes its spec, checks it and publishes it. It shows up under Goals and Builds." : "ForgeOne plans milestones and tasks, then works on them until it is done, needs you, or hits the budget."}</p></div>
+      <div class="seg-group"><a class="seg-btn ${kind === "goal" ? "on" : ""}" href="#/new">A goal</a><a class="seg-btn ${kind === "build" ? "on" : ""}" href="#/new?kind=build">Build an agent</a></div></div>
+    <form class="panel form" id="new-goal" novalidate>
+      <input type="hidden" name="kind" value="${kind}">
+      ${kind === "build" ? buildFields : goalFields}
+      <div class="field-row">
+        <label class="field"><span class="lbl">Budget in USD</span><input name="budget" type="number" min="0.01" max="${esc(a.max_budget)}" step="0.01" value="${kind === "build" ? "0.50" : "1.00"}" required>
+          <span class="help">It stops when this is spent. At most ${esc(cap)} from the dashboard.</span></label>
+        ${tokenField(a)}
+      </div>
+      <div class="form-foot"><div class="form-msg" role="status" aria-live="polite"></div>
+        <button class="btn primary" type="submit" ${a.enabled ? "" : "disabled"}>${kind === "build" ? "Start the build" : "Plan and start"}</button></div>
+    </form>`;
+  return true;
+}
+
+async function submitNewGoal(form) {
+  const f = new FormData(form);
+  const msg = form.querySelector(".form-msg");
+  const btn = form.querySelector("button[type=submit]");
+  const body = Object.fromEntries([...f.entries()].filter(([k]) => k !== "token"));
+  if (body.kind === "goal" && !String(body.title || "").trim()) { msg.textContent = "Give the goal a title."; msg.className = "form-msg bad"; return; }
+  const token = f.get("token") || getToken();
+  btn.disabled = true; msg.className = "form-msg"; msg.textContent = "Starting…";
+  try {
+    const job = await post("/api/actions/goals", body, token);
+    if (f.get("token")) setToken(token);
+    state.lastJSON = "";
+    location.hash = `#/job/${job.id}`;
+  } catch (e) {
+    msg.className = "form-msg bad"; msg.textContent = e.message; btn.disabled = false;
+    if (/password/i.test(e.message)) { state.lastJSON = ""; }
+  }
+}
+
+async function viewJob(id) {
+  const j = await api(`/api/actions/jobs/${encodeURIComponent(id)}`);
+  const data = JSON.stringify(j);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: j.kind === "build" ? j.title : j.kind === "run" ? `Continue ${j.goal_id}` : "New goal" }]);
+  const next = j.state === "running"
+    ? (j.kind === "goal" ? "Planning first, then working on the tasks. The goal page fills in as it goes." : "Working. The goal page shows each task as it happens.")
+    : j.state === "finished" ? "Done for now: the goal is finished, needs you, or reached its budget. The goal page says which."
+    : "The process stopped with an error. The last lines below say why.";
+  main.innerHTML = `
+    <div class="page-head"><div><h1>${esc(j.title)}</h1><p>${esc(next)}</p></div><div>${jobStatus(j)}</div></div>
+    ${j.goal_id ? `<p><a class="btn primary" href="#/g/${esc(j.goal_id)}">Open the goal ${esc(j.goal_id)}</a></p>` : ""}
+    ${panel("Output", `started ${esc(fmtDate(j.started_at))}${j.state === "running" ? ", updates every 3 s" : ""}`,
+      `<div class="panel-body"><pre class="joblog">${esc(j.log.join("\n")) || "No output yet."}</pre>
+       <div class="muted" style="margin-top:10px;font-size:12.5px">Same as running on the server: ${cmd(j.command)}</div></div>`)}`;
+  const pre = main.querySelector(".joblog"); if (pre) pre.scrollTop = pre.scrollHeight;
+  return true;
+}
+
+function runButton(g, a, job) {
+  if (job) return `<div class="notice run-now"><b>Running now.</b> Started ${esc(fmtDate(job.started_at))}. <a href="#/job/${esc(job.id)}">See the output</a></div>`;
+  if (!["planned", "paused", "waiting"].includes(g.status)) return "";
+  if (g.status === "paused" && g.budget_usd != null && n(g.cost_usd) >= n(g.budget_usd)) return "";
+  if (!a?.enabled) return "";
+  return `<div class="run-bar">${getToken() ? "" : `<input type="password" id="run-token" placeholder="Action password" autocomplete="current-password" aria-label="Action password">`}
+    <button class="btn primary" type="button" data-run-goal="${esc(g.id)}">${g.status === "planned" ? "Start working" : "Continue"}</button><span class="form-msg" role="status" aria-live="polite"></span></div>`;
+}
+
 /* ---------------- router ---------------- */
 function parse() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
@@ -1204,6 +1337,8 @@ function parse() {
   if (parts[0] === "support") return { name: "support", id: query, q: new URLSearchParams(query), nav: "support" };
   if (parts[0] === "g" && parts[1]) return { name: "wgoal", id: parts[1], nav: "work" };
   if (parts[0] === "t" && parts[1]) return { name: "wtask", id: parts[1], nav: "work" };
+  if (parts[0] === "new") return { name: "new", id: query, q: new URLSearchParams(query), nav: "work" };
+  if (parts[0] === "job" && parts[1]) return { name: "job", id: parts[1], nav: "work" };
   if (parts[0] === "inbox") return { name: "inbox", nav: "inbox" };
   if (parts[0] === "builds") return { name: "home", nav: "builds" };
   if (parts[0] === "build-goals") return { name: "goals", nav: "builds" };
@@ -1230,6 +1365,8 @@ async function render({ quiet = false } = {}) {
     else if (route.name === "wgoal") await viewWorkGoal(route.id);
     else if (route.name === "wtask") await viewTask(route.id);
     else if (route.name === "inbox") await viewInbox();
+    else if (route.name === "new") await viewNewGoal(route.q);
+    else if (route.name === "job") await viewJob(route.id);
     else if (route.name === "support") await viewSupport(route.q);
     else if (route.name === "quality") await viewQuality();
     else if (route.name === "docs") await viewDocs();
@@ -1280,6 +1417,24 @@ document.addEventListener("change", (e) => {
   cb.checked ? state.evHidden.delete(cb.dataset.ev) : state.evHidden.add(cb.dataset.ev);
   state.lastJSON = ""; render({ quiet: true });
 });
+document.addEventListener("submit", (e) => {
+  if (e.target.id !== "new-goal") return;
+  e.preventDefault(); submitNewGoal(e.target);
+});
+document.addEventListener("click", async (e) => {
+  if (e.target.closest("[data-forget-token]")) { setToken(""); state.lastJSON = ""; render({ quiet: true }); return; }
+  const b = e.target.closest("[data-run-goal]");
+  if (!b) return;
+  const bar = b.closest(".run-bar"), msg = bar.querySelector(".form-msg"), input = bar.querySelector("#run-token");
+  const token = input ? input.value : getToken();
+  if (!token) { msg.className = "form-msg bad"; msg.textContent = "Enter the action password."; input?.focus(); return; }
+  b.disabled = true; msg.className = "form-msg"; msg.textContent = "Starting…";
+  try {
+    const job = await post(`/api/actions/goals/${encodeURIComponent(b.dataset.runGoal)}/run`, {}, token);
+    if (input) setToken(token);
+    location.hash = `#/job/${job.id}`;
+  } catch (err) { msg.className = "form-msg bad"; msg.textContent = err.message; b.disabled = false; }
+});
 $("#sheet-close").addEventListener("click", () => closeSheet());
 $("#sheet-backdrop").addEventListener("click", () => closeSheet());
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
@@ -1300,6 +1455,9 @@ document.addEventListener("focusin", (e) => { const t = e.target.closest("[data-
 window.addEventListener("hashchange", () => { tip.hidden = true; render(); });
 render();
 refreshBadge();
+setInterval(() => {                       // the output of a running job follows faster
+  if (!document.hidden && state.route?.name === "job" && !/"state":"(finished|stopped|ended)"/.test(state.lastJSON)) render({ quiet: true });
+}, 3000);
 setInterval(() => {
   if (document.hidden || !$("#sheet").hidden || state.route?.nav === "docs") return;
   render({ quiet: true });

@@ -26,7 +26,7 @@ def _store():
 
 
 def run_build(agent: str = "voyagerone", goal_file: str | Path | None = None, publish: str = "branch",
-              budget_usd: float | None = None, store=None, brain=None, repo: AgentRepo | None = None) -> dict:
+              budget_usd: float | None = None, store=None, goal_id: str | None = None, brain=None, repo: AgentRepo | None = None) -> dict:
     """Returns {"run_id", "goal_id", "status", "tree", "spec_path", "published"}."""
     from ..work import Engine, Goal
 
@@ -40,6 +40,7 @@ def run_build(agent: str = "voyagerone", goal_file: str | Path | None = None, pu
     model = settings().builder_model
     name = goal_title(text, agent).rstrip(".")
     goal = Goal(
+        **({"id": goal_id} if goal_id else {}),
         title=name if name.lower().startswith("build") else f"Build {agent}: {name}", description=text, agent_type="builder",
         autonomy="autonomous", playbook="build_agent", budget_usd=budget_usd,
         success_criteria=[f"agent/spec.yaml for {agent} passes its checks, review and edge tests",

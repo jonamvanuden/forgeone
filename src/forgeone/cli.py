@@ -34,7 +34,7 @@ def _build(a):
         return
     from .builder import run_build
 
-    res = run_build(a.agent, a.goal, publish=a.publish, budget_usd=a.budget)
+    res = run_build(a.agent, a.goal, publish=a.publish, budget_usd=a.budget, goal_id=a.goal_id)
     _print_tree(res["tree"])
     if res["published"]:
         print(res["published"])
@@ -260,7 +260,7 @@ def _goal(a):
             desc = Path(a.file).read_text(encoding="utf-8")
         goal = Goal(title=a.title, description=desc, agent=a.agent, agent_type=a.type,
                     success_criteria=a.criteria or [], constraints=a.constraint or [], budget_usd=a.budget,
-                    autonomy=a.autonomy, context_policy=a.context)
+                    autonomy=a.autonomy, context_policy=a.context, **({"id": a.id} if a.id else {}))
         print(f"planning {goal.id} ...")
         tree = engine.create(goal)
         _print_tree(tree)
@@ -437,6 +437,7 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--publish", default="branch", choices=["branch", "main", "none"],
                    help="branch: push forgeone/<run-id> (default), main: commit to main, none: don't touch the repo")
     b.add_argument("--budget", type=float, default=None, help="stop the build when it has cost this much (USD)")
+    b.add_argument("--goal-id", default=None, help=argparse.SUPPRESS)      # set by the Control Room
     b.add_argument("--legacy", action="store_true", help="the original two-node LangGraph build, without tasks and checks")
     b.set_defaults(fn=_build)
 
@@ -490,6 +491,7 @@ def main(argv: list[str] | None = None) -> None:
     go.add_argument("--context", default="default", choices=["lean", "default", "rich"],
                     help="how much context model calls get: budgets, memory, agent history (context/policy.py)")
     go.add_argument("--run", action="store_true", help="start working right after planning")
+    go.add_argument("--id", default=None, help=argparse.SUPPRESS)          # set by the Control Room
     go.add_argument("--max-tasks", type=int, default=None, help="stop after this many tasks")
     go.add_argument("--reason", default=None, help="why you replan")
     go.add_argument("--actions", action="store_true", help="show: list every action")

@@ -21,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 
 from ..config import settings
 from ..llm.pricing import PRICES, call_cost, price
-from . import db, work_api
+from . import actions, db, work_api
 
 STATIC = Path(__file__).parent / "static"
 DOCS = settings().docs_dir   # project documents (HTML + PDF), served at /docs
@@ -346,6 +346,30 @@ def api_errors(request: Request):
     return JSON(sorted(merged.values(), key=lambda e: e["ts"], reverse=True))
 
 
+def _act(fn):
+    async def handler(request: Request):
+        try:
+            if request.method == "POST":
+                actions.check_token(request.headers.get("x-forgeone-token"))
+                body = {}
+                if request.headers.get("content-length", "0") != "0":
+                    body = await request.json()
+                    if not isinstance(body, dict):
+                        raise actions.ActionError(400, "Send a JSON object.")
+                return JSON(fn(request, body))
+            return JSON(fn(request, None))
+        except actions.ActionError as e:
+            return JSON({"error": e.message}, status_code=e.status)
+        except ValueError:
+            return JSON({"error": "Send valid JSON."}, status_code=400)
+    return handler
+
+
+def api_actions(request: Request, _):
+    return {"enabled": actions.enabled(), "max_budget": actions.max_budget(), "agents": actions.agents(),
+            "max_jobs": actions.MAX_JOBS, "jobs": actions.list_jobs()}
+
+
 def index(request: Request):
     return FileResponse(STATIC / "index.html")
 
@@ -371,6 +395,11 @@ routes = [
     Route("/api/work/tasks/{task_id}", lambda r: JSON(work_api.api_work_task(r))),
     Route("/api/support", lambda r: JSON({**work_api.api_support(r),
                                           "errors_24h": _safe(lambda: db.one(db.OVERVIEW)["errors_24h"], 0)})),
+    Route("/api/actions", _act(api_actions)),
+    Route("/api/actions/jobs/{job_id}", _act(lambda r, _: actions.job_log(r.path_params["job_id"]))),
+    Route("/api/actions/check", _act(lambda r, b: {"ok": True}), methods=["POST"]),
+    Route("/api/actions/goals", _act(lambda r, b: actions.new_goal(b)), methods=["POST"]),
+    Route("/api/actions/goals/{goal_id}/run", _act(lambda r, b: actions.run_goal(r.path_params["goal_id"])), methods=["POST"]),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
     Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
     Route("/", index),

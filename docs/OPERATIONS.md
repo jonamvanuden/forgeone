@@ -34,6 +34,29 @@ forgeone db migrate                       # apply new schema migrations (safe to
 pytest -q                                 # unit tests, no API key needed
 ```
 
+## Starting work from the dashboard
+**Goals → New goal** (plan and start a goal) or **Build an agent** (design → spec → checks → branch).
+A planned or paused goal has a **Start working / Continue** button. Each start shows its live output
+and the same `forgeone` command it ran; everything is also listed under *Started from the dashboard*.
+
+The dashboard stays public and read-only; these buttons need the action password:
+```bash
+echo "FORGEONE_ACTION_TOKEN=$(openssl rand -hex 16)" >> ~/ForgeOne/.env   # then read it: grep ACTION ~/ForgeOne/.env
+systemctl restart forgeone-dashboard
+```
+Limits: a budget is required and at most `FORGEONE_MAX_GOAL_BUDGET` (default $5); at most 2 jobs at
+once; one per goal; a build from the dashboard pushes a branch or nothing, never main. 10 wrong
+passwords lock the buttons for 10 minutes. Jobs run as separate processes (logs in
+`runs/_jobs/`), so restarting the dashboard does not stop them. Approving stays on the command line.
+
+## Test build of VoyagerOne
+1. `forgeone agent status voyagerone`: clean main.
+2. Dashboard → Goals → **Build an agent**, agent voyagerone, *Don't touch the repository* for a dry
+   run (or *Push a branch*), budget $0.50 → **Start the build**.
+3. Watch the output; open the goal for each task, check and its context. Builds also lists it.
+4. With a branch: merge `forgeone/<run-id>` on GitHub, `cd ~/VoyagerOne && git pull`, then
+   `forgeone eval run --variant haiku --case factual-who-sugar --repeats 1`.
+
 ## Goals (the main way to give ForgeOne work)
 ```bash
 forgeone goal new "What does WHO advise on free sugars?" --agent voyagerone --budget 1 \

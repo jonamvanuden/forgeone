@@ -34,7 +34,7 @@ one responsibility and has its own README when it is not built yet.
 | `llm/` | Model access (`chat_model`), model registry (Claude built in, others from `models.yaml`), an OpenAI-compatible adapter for RunPod/Qwen3, pricing | working |
 | `observability/` | Structured events: context, events, tracing, LLM logger, redaction | working |
 | `store/` | Postgres sink, writer, backfill, **versioned migrations** | working |
-| `control_room/` | Dashboard: Starlette JSON API + single-page UI | working |
+| `control_room/` | Dashboard: Starlette JSON API + single-page UI; start goals and builds behind an action password | working |
 | `config.py` | All settings and paths, from the environment | working |
 | `cli.py` | The `forgeone` command | working |
 
@@ -43,7 +43,8 @@ one responsibility and has its own README when it is not built yet.
 2. `builder`, `runtime` and `evals` may use those, never each other's internals.
    The builder talks to evals only through `evals` public functions (scorecard, gate).
 3. `control_room` only **reads** from the store. It never imports builder or runtime, and never runs the work
-   engine; it reads goals through `work.store` and `work.views`.
+   engine; it reads goals through `work.store` and `work.views`. Its only write actions (`control_room/actions.py`:
+   new goal, build, continue) start the `forgeone` CLI as a separate process, behind the action password.
 4. **The builder never reads an eval suite.** Suites live in the agent repo's `evals/` and are
    loaded only by `evals`. This keeps evaluation honest (Goodhart's law).
 5. **ForgeOne writes only inside an agent repo's `agent/` folder**, always via

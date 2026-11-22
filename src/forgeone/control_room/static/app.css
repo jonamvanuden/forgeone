@@ -689,3 +689,39 @@ details > summary { cursor: pointer; }
 .table.ctx td, .table.ctx th { padding: 6px 10px; }
 .ctx-ex { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
 .ctx-agent { margin-top: 8px; font-size: 12.5px; color: var(--ink-2); }
+
+/* =================== starting work from the dashboard =================== */
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.form { padding: 22px 24px; display: grid; gap: 18px; max-width: 980px; }
+.field { display: grid; gap: 6px; align-content: start; }
+.field .lbl { font-size: 13px; font-weight: 600; color: var(--ink); }
+.field .lbl i { font-style: normal; font-weight: 400; color: var(--muted); }
+.field .help { font-size: 12.5px; color: var(--muted); }
+.field input, .field select, .field textarea, .run-bar input {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 9px; padding: 9px 11px; width: 100%; box-sizing: border-box; }
+.field textarea { resize: vertical; line-height: 1.5; }
+.field input:focus-visible, .field select:focus-visible, .field textarea:focus-visible, .run-bar input:focus-visible {
+  outline: 2px solid var(--violet); outline-offset: 1px; border-color: var(--violet); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.field-row.three { grid-template-columns: repeat(3, 1fr); }
+.form-foot { display: flex; align-items: center; justify-content: flex-end; gap: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+.form-msg { font-size: 13px; color: var(--ink-2); }
+.form-msg.bad { color: var(--fail); font-weight: 600; }
+.btn[disabled] { opacity: .55; cursor: not-allowed; }
+.linkish { background: none; border: 0; padding: 0; color: var(--violet-700); text-decoration: underline; cursor: pointer; font-size: inherit; }
+.jobs { list-style: none; margin: 0; padding: 0; }
+.jobs li { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 10px 20px; border-top: 1px solid var(--line); }
+.jobs li:first-child { border-top: 0; }
+.jobs .muted { font-size: 12.5px; margin-top: 2px; }
+.joblog { margin: 0; max-height: 520px; overflow: auto; font: 12px/1.55 var(--mono); background: #17112e; color: #e4defa;
+  padding: 14px 16px; border-radius: var(--r-md); white-space: pre-wrap; word-break: break-word; }
+.run-bar { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.run-bar input { width: 240px; }
+.notice.run-now { background: var(--run-50); border-color: transparent; color: var(--ink); }
+.notice.run-now b { color: var(--run); }
+@media screen and (max-width: 720px) {
+  .field-row, .field-row.three { grid-template-columns: 1fr; }
+  .form { padding: 18px 16px; }
+  .run-bar input { width: 100%; }
+}
