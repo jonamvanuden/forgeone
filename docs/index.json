@@ -14,5 +14,13 @@
     "summary": "How ForgeOne is organised as a long-lived product: the package map and dependency rules, agents in their own repositories (VoyagerOne), how a build is published, the evaluation architecture (suites, checks, scorecards, promotion gate), versioned migrations and the server changes.",
     "html": "/docs/day-02.html",
     "pdf": "/docs/day-02.pdf"
+  },
+  {
+    "slug": "day-03",
+    "title": "Day 3: Improvements",
+    "date": "2026-11-22",
+    "summary": "Explained for newcomers: goals broken into milestones, tasks and actions; the stages every task goes through (execute, verify, edge test, approve) and how failures feed the next attempt; sign-offs and go-aheads; agents that really run with browser tools; building an agent as a goal with a playbook; where it is all stored, and how it turns into knowledge about which model works for which task.",
+    "html": "/docs/day-03.html",
+    "pdf": "/docs/day-03.pdf"
   }
 ]
