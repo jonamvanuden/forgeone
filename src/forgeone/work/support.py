@@ -199,14 +199,17 @@ def analyze(trees: list[GoalTree], days: int | None = 30, scope: str = "all", no
             c = a.context or {}
             if not c.get("sections") or a.status not in ("passed", "failed") or not recent(a.started_at):
                 continue
-            k = ctx.setdefault(a.kind, {"stage": a.kind, "calls": 0, "tokens_est": 0, "billed": 0, "billed_n": 0,
-                                        "cut": 0, "cut_passed": 0, "uncut": 0, "uncut_passed": 0, "tokens_lost": 0})
+            pol = c.get("policy") or "default"
+            k = ctx.setdefault((pol, a.kind), {"policy": pol, "stage": a.kind, "calls": 0, "tokens_est": 0, "billed": 0,
+                                               "billed_n": 0, "cut": 0, "cut_passed": 0, "uncut": 0, "uncut_passed": 0,
+                                               "tokens_lost": 0, "cost": 0.0})
+            k["cost"] += a.cost_usd
             k["calls"] += 1
             k["tokens_est"] += c.get("tokens_est", 0)
             if c.get("tokens_billed"):
                 k["billed"] += c["tokens_billed"]
                 k["billed_n"] += 1
-            was_cut = (c.get("cut") or 0) > 0
+            was_cut = (c.get("cut") or 0) + (c.get("omitted") or 0) > 0
             k["cut" if was_cut else "uncut"] += 1
             k["cut_passed" if was_cut else "uncut_passed"] += a.status == "passed"
             k["tokens_lost"] += c.get("tokens_lost", 0)
@@ -217,12 +220,13 @@ def analyze(trees: list[GoalTree], days: int | None = 30, scope: str = "all", no
                 agent["sent"] += h.get("sent_tokens_est", 0)
                 agent["without"] += h.get("without_shortening_est", 0)
                 agent["cache_read"] += h.get("cache_read_tokens", 0)
-    context = [{"stage": k["stage"], "calls": k["calls"], "tokens_est": round(k["tokens_est"] / k["calls"]),
+    context = [{"policy": k["policy"], "stage": k["stage"], "calls": k["calls"],
+                "tokens_est": round(k["tokens_est"] / k["calls"]), "cost_per_call": round(k["cost"] / k["calls"], 6),
                 "tokens_billed": round(k["billed"] / k["billed_n"]) if k["billed_n"] else None,
                 "cut_rate": k["cut"] / k["calls"], "tokens_lost": k["tokens_lost"],
                 "pass_when_cut": k["cut_passed"] / k["cut"] if k["cut"] else None,
                 "pass_uncut": k["uncut_passed"] / k["uncut"] if k["uncut"] else None}
-               for k in sorted(ctx.values(), key=lambda k: -k["calls"])]
+               for k in sorted(ctx.values(), key=lambda k: (k["stage"], k["policy"]))]
 
     wasted = round(sum(_wasted(tr, t) for tr, t in work if recent(t.finished_at or t.updated_at)), 6)
     spent = round(sum(a.cost_usd for tr in trees for a in tr.actions if recent(a.started_at)), 6)

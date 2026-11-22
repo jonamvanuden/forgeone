@@ -23,6 +23,19 @@ PRICES: dict[str, tuple[float, float]] = {
 _DATE_SUFFIX = re.compile(r"-(\d{8}|latest)$")
 
 
+def _registered(model: str) -> tuple[float, float] | None:
+    """Prices of models from models.yaml (e.g. Qwen3 on RunPod), if they declare any."""
+    try:
+        from .registry import registry
+
+        info = registry().get(model)
+    except Exception:  # noqa: BLE001  (a broken models.yaml must not break cost figures)
+        return None
+    if info and info.price_in is not None:
+        return info.price_in, info.price_out or 0.0
+    return None
+
+
 def resolve_model(model: str | None) -> str | None:
     """Map what the API reports to a PRICES key: 'anthropic:claude-sonnet-5-5-20260928'
     -> 'claude-sonnet-5-5'. Returns None if no price is known."""
@@ -42,9 +55,13 @@ def price(model: str | None, long_prompt: bool, tokens_in, tokens_out, cache_rea
     as the API reports it; cache_read and cache_write say how many of them were cached."""
     base = resolve_model(model)
     if base is None:
-        return None
-    key = f"{base}:long" if long_prompt and f"{base}:long" in PRICES else base
-    pin, pout = PRICES[key]
+        reg = _registered(str(model)) if model else None
+        if reg is None:
+            return None
+        pin, pout = reg
+    else:
+        key = f"{base}:long" if long_prompt and f"{base}:long" in PRICES else base
+        pin, pout = PRICES[key]
     cr, cw = float(cache_read or 0), float(cache_write or 0)
     plain = max(0.0, float(tokens_in or 0) - cr - cw)
     return (plain * pin + cr * pin * CACHE_READ_FACTOR + cw * pin * CACHE_WRITE_FACTOR

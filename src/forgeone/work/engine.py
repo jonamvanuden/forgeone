@@ -15,7 +15,10 @@ import logging
 import time
 from contextlib import contextmanager
 
-from ..context import ContextPack
+from ..context import PRESETS, ContextPack, resolve
+from ..memory import find_lessons
+from ..context.budget import budget_for
+from ..context.pack import P_DEPS, P_EVIDENCE, P_HISTORY, P_LESSONS, P_REVIEWS, estimate_tokens
 from ..observability import log_event, start_run
 from ..observability.context import iteration_var, node_var, run_id_var
 from .brain import Answer, Brain, prompt_version, template
@@ -142,6 +145,7 @@ class Engine:
         self._agent: AgentExecutor | None = None
         self.tasks_run = 0
         self.max_tasks: int | None = None
+        self.policy = PRESETS["default"]           # set from the goal in plan() and run()
 
     # ================================================================ plumbing
     @contextmanager
@@ -233,9 +237,16 @@ class Engine:
             p.add(k, v)
         return p
 
+    def _fit(self, pack: ContextPack, prompt: str | None, model: str | None) -> None:
+        """Apply the token budget of this kind of call (scaled by the goal's context policy)."""
+        pack.policy = self.policy.name
+        pack.fit(budget_for(pack.purpose, model, self.policy.budget_scale),
+                 reserved=estimate_tokens(template(prompt)) if prompt else 0)
+
     def _ask(self, tree: GoalTree, a: Action, schema, prompt: str, model: str, pack: ContextPack) -> Answer | None:
         """A model call for an action, with its context manifest; a failed call closes the action as
         failed (model_error)."""
+        self._fit(pack, prompt, model)
         a.context = pack.manifest(template(prompt), prompt_version(prompt))
         try:
             ans = self.brain.ask(schema, prompt, model, **pack.values)
@@ -261,6 +272,7 @@ class Engine:
 
     def plan(self, goal_id: str, reason: str | None = None) -> GoalTree:
         tree = self.store.load(goal_id)
+        self.policy = resolve(tree.goal.context_policy)
         with self._session("goal.plan", tree.goal):
             try:
                 self._plan(tree, reason)
@@ -399,6 +411,7 @@ class Engine:
             return tree
         if not tree.active_milestones():
             raise ValueError(f"{g.id} has no plan yet: forgeone goal replan {g.id}")
+        self.policy = resolve(g.context_policy)
         self.tasks_run, self.max_tasks = 0, max_tasks
         with self._session("goal.run", g):
             g.status, g.note = "running", None
@@ -625,10 +638,35 @@ class Engine:
             p.add(k, v, name="task", required=True)
         p.add("criteria", bullets(t.acceptance_criteria), name="acceptance criteria", required=True)
         p.join("deps", [(f"## {d.code} {d.title}", d.id, d.output) for d in deps], limit_each=DEP_LIMIT,
-               name="dependency output")
+               name="dependency output", priority=P_DEPS)
         p.add("feedback", f"\n# Feedback on your previous attempt\n{t.feedback}\n" if t.feedback else "",
               name="feedback", source=f"attempt {t.attempts - 1}" if t.feedback else None, required=True)
-        p.exclude("outputs of earlier attempts", "only the feedback on them is passed on")
+        fails = [a for a in tree.actions_of(t.id) if a.status == "failed" and a.kind != "plan" and not a.input.get("gate")]
+        earlier = fails[:-1] if t.feedback else fails      # the latest one is the feedback above
+        if self.policy.attempt_history:
+            p.join("history", [(None, f"attempt {a.attempt}",
+                                f"- attempt {a.attempt}, {a.kind.replace('_', ' ')}: {a.reason or ''}"
+                                + (f" Asked to fix: {a.feedback}" if a.feedback else "")) for a in earlier],
+                   name="earlier attempts", priority=P_HISTORY, empty="", sep="\n",
+                   prefix="\n# What went wrong in earlier attempts (do not repeat it)\n")
+        else:
+            p.add("history", "", name="earlier attempts")
+            if earlier:
+                p.exclude("feedback of attempts before the last one", f"context policy {self.policy.name}")
+        lessons = []
+        if self.policy.lessons:
+            try:
+                lessons = find_lessons(self.store.failures(t.type, exclude_task=t.id), t.title, t.description,
+                                       limit=self.policy.max_lessons)
+            except Exception as e:  # noqa: BLE001  (memory must never stop the work)
+                log_event("memory.error", logging.WARNING, error=f"{type(e).__name__}: {e}")
+            p.join("lessons", [(None, x.task_id, f"- {x.text}") for x in lessons], name="lessons from earlier work",
+                   priority=P_LESSONS, empty="", sep="\n",
+                   prefix="\n# Lessons from similar earlier work (avoid these mistakes)\n")
+        else:
+            p.add("lessons", "", name="lessons from earlier work")
+            p.exclude("lessons from earlier work", f"context policy {self.policy.name}")
+        p.exclude("outputs of earlier attempts", "only what went wrong in them is passed on")
         p.exclude("tasks this one does not depend on", "only direct dependencies are included")
         return p
 
@@ -637,6 +675,8 @@ class Engine:
             executor = StepExecutor(self, tree)
         else:
             executor = self.agent(tree.goal) if t.executor == "agent" else None
+            if executor is not None:
+                executor.policy = self.policy
             executor = executor or LLMExecutor(self.brain)
         a = self._act(tree, "execute", task=t, attempt=n,
                       actor=f"step:{t.step}" if t.executor == "step" else f"{executor.name}:{t.model}",
@@ -644,6 +684,7 @@ class Engine:
                       input={"executor": executor.name, "depends_on": t.depends_on, "feedback": t.feedback})
         pack = self._context(tree, m, t, t.model)
         prompt = "execute_agent" if executor.name == "agent" else "execute"
+        self._fit(pack, prompt, t.model)
         a.context = pack.manifest(template(prompt), prompt_version(prompt)) if executor.name != "step" else {}
         with self._node(self._label("execute", t), n):
             res = executor.run(t, pack.values)
@@ -687,8 +728,9 @@ class Engine:
         pack.add("title", t.title, name="task", required=True)
         pack.add("expected_output", t.expected_output, name="task", required=True)
         pack.add("criteria", numbered(t.acceptance_criteria), name="acceptance criteria", required=True)
-        pack.add("evidence", evidence, name="evidence", source="run facts")
-        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True)
+        pack.add("evidence", evidence, name="evidence", source="run facts", priority=P_EVIDENCE)
+        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True,
+                 cuttable=True)
         pack.fixed("failure_reasons", ", ".join(FAILURE_REASONS))
         pack.exclude("the executor's reasoning, prompt and tool calls", "the reviewer judges the output, not the story")
         with self._node(self._label("verify", t), n):
@@ -706,7 +748,8 @@ class Engine:
         a = self._act(tree, "edge_test", task=t, attempt=n, actor=self.brain.judge_model)
         pack = self._pack("edge_test", self.brain.judge_model, title=t.title, description=t.description,
                           expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria))
-        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True)
+        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True,
+                 cuttable=True)
         pack.exclude("the executor's reasoning", "edge cases are tested against the output only")
         with self._node(self._label("edge_test", t), n):
             ans = self._ask(tree, a, EdgeReport, "edge_test", self.brain.judge_model, pack)
@@ -728,8 +771,9 @@ class Engine:
         a = self._act(tree, "approve", task=t, attempt=n, actor=self.brain.judge_model)
         pack = self._pack("approve", self.brain.judge_model, goal=tree.goal.title, code=t.code, title=t.title,
                           expected_output=t.expected_output, criteria=bullets(t.acceptance_criteria))
-        pack.add("reviews", reviews or "- none", name="reviews", source=f"attempt {n}")
-        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True)
+        pack.add("reviews", reviews or "- none", name="reviews", source=f"attempt {n}", priority=P_REVIEWS)
+        pack.add("output", res.output, name="output", source=f"execute attempt {n}", limit=OUTPUT_LIMIT, required=True,
+                 cuttable=True)
         with self._node(self._label("approve", t), n):
             ans = self._ask(tree, a, Approval, "approve", self.brain.judge_model, pack)
         if ans is None:

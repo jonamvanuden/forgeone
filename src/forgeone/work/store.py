@@ -21,6 +21,7 @@ class WorkStore(Protocol):
     def load(self, goal_id: str) -> GoalTree: ...
     def goals(self) -> list[Goal]: ...
     def find(self, record_id: str) -> tuple[str, str] | None: ...   # -> (kind, goal_id)
+    def failures(self, task_type: str, exclude_task: str | None = None, limit: int = 200) -> list[dict]: ...
 
 
 class NotFound(KeyError):
@@ -51,12 +52,30 @@ class MemoryStore:
     def goals(self) -> list[Goal]:
         return sorted(self.rows[Goal].values(), key=lambda g: g.created_at, reverse=True)
 
+    def failures(self, task_type: str, exclude_task: str | None = None, limit: int = 200) -> list[dict]:
+        """Failed checks and rejections (with a reason or fix) of tasks of this type, newest first."""
+        rows = []
+        for a in self.rows[Action].values():
+            t = self.rows[Task].get(a.task_id) if a.task_id else None
+            if (t is None or t.type != task_type or t.id == exclude_task or a.status != "failed"
+                    or a.kind not in ("verify", "edge_test", "approve") or a.input.get("gate")
+                    or not (a.feedback or a.reason)):
+                continue
+            rows.append(_failure_row(self.rows[Goal][a.goal_id], t, a))
+        return sorted(rows, key=lambda r: r["started_at"], reverse=True)[:limit]
+
     def find(self, record_id: str):
         for cls, kind in ((Goal, "goal"), (Milestone, "milestone"), (Task, "task"), (Action, "action")):
             r = self.rows[cls].get(record_id)
             if r is not None:
                 return kind, (r.id if cls is Goal else r.goal_id)
         return None
+
+
+def _failure_row(goal: Goal, t: Task, a: Action) -> dict:
+    return {"goal_id": goal.id, "goal": goal.title, "task_id": t.id, "title": t.title, "type": t.type,
+            "task_status": t.status, "kind": a.kind, "actor_type": a.actor_type, "reason": a.reason,
+            "feedback": a.feedback, "failure_reason": a.failure_reason, "started_at": a.started_at}
 
 
 class PgStore:
@@ -105,6 +124,18 @@ class PgStore:
     def goals(self) -> list[Goal]:
         with self._conn(rows=True) as c:
             return [Goal.model_validate(r) for r in c.execute("SELECT * FROM goals ORDER BY created_at DESC").fetchall()]
+
+    def failures(self, task_type: str, exclude_task: str | None = None, limit: int = 200) -> list[dict]:
+        with self._conn(rows=True) as c:
+            return c.execute("""
+                SELECT g.id AS goal_id, g.title AS goal, t.id AS task_id, t.title, t.type, t.status AS task_status,
+                       a.kind, a.actor_type, a.reason, a.feedback, a.failure_reason, a.started_at
+                FROM actions a JOIN tasks t ON t.id = a.task_id JOIN goals g ON g.id = a.goal_id
+                WHERE t.type = %(type)s AND t.id <> %(exclude)s AND a.status = 'failed'
+                  AND a.kind IN ('verify', 'edge_test', 'approve') AND NOT coalesce((a.input->>'gate')::boolean, false)
+                  AND (coalesce(a.feedback, '') <> '' OR coalesce(a.reason, '') <> '')
+                ORDER BY a.started_at DESC LIMIT %(limit)s""",
+                {"type": task_type, "exclude": exclude_task or "", "limit": limit}).fetchall()
 
     def find(self, record_id: str):
         with self._conn(rows=True) as c:

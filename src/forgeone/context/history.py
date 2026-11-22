@@ -29,6 +29,7 @@ class HistoryPolicy:
     keep_full: int = 3              # the most recent tool results stay in full
     shorten_above: int = 1200       # older results longer than this (characters) become one line
     cache: bool = True              # mark tools + system prompt for prompt caching (Claude models)
+    max_tokens: int | None = None   # budget for the whole conversation; over it, recent results are shortened too
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -45,15 +46,25 @@ def compact_history(messages: list, results: list[dict], policy: HistoryPolicy) 
     from langchain_core.messages import ToolMessage
 
     shortened, saved = 0, 0
-    for r in results[:-policy.keep_full] if policy.keep_full else results:
-        if r["shortened"] or r["chars"] <= policy.shorten_above:
-            continue
+
+    def shorten(r):
+        nonlocal shortened, saved
         old = messages[r["index"]]
         text = stub(r["tool"], r["args"], r["chars"])
         messages[r["index"]] = ToolMessage(text, tool_call_id=old.tool_call_id)
         r["shortened"], r["stub_chars"] = True, len(text)
         shortened += 1
         saved += r["chars"] - len(text)
+
+    for r in results[:-policy.keep_full] if policy.keep_full else results:
+        if not r["shortened"] and r["chars"] > policy.shorten_above:
+            shorten(r)
+    if policy.max_tokens:                       # over budget: shorten recent results too, oldest first,
+        for r in results[:-1]:                  # but always keep the newest one in full
+            if messages_tokens(messages) <= policy.max_tokens:
+                break
+            if not r["shortened"] and r["chars"] > policy.shorten_above:
+                shorten(r)
     return {"shortened": shortened, "chars_saved": saved}
 
 

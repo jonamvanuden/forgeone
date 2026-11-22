@@ -64,6 +64,7 @@ class AgentExecutor:
         self.browser_factory = browser_factory
         self.llm_factory = llm_factory
         self._browser = None
+        self.policy = None                       # the goal's ContextPolicy, set by the engine
 
     @property
     def tools(self) -> list[str]:
@@ -95,9 +96,12 @@ class AgentExecutor:
         from .brain import prompt_version
 
         prompt = render("execute_agent", **context)
-        cfg = RunConfig(model=task.model or settings().agent_model, variant=f"task:{task.type}",
+        from ..context import resolve
+
+        model = task.model or settings().agent_model
+        cfg = RunConfig(model=model, variant=f"task:{task.type}",
                         max_steps=min(self.spec.max_steps, max(5, 3 * (task.est_steps or 5))),
-                        max_cost_usd=task.budget_usd)
+                        max_cost_usd=task.budget_usd, history=resolve(self.policy).history(model))
         t0 = time.perf_counter()
         try:
             trace = run_agent(self.spec, prompt, cfg, browser=self.browser(), case_id=task.code, agent=self.agent,

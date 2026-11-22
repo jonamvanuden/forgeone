@@ -13,4 +13,4 @@ Constraints:
 
 Results of earlier tasks you can build on:
 {deps}
-{feedback}
+{feedback}{history}{lessons}

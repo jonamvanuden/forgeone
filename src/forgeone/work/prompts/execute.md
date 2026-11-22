@@ -19,5 +19,5 @@ Your output will be checked against:
 
 # Results of the tasks this one depends on
 {deps}
-{feedback}
+{feedback}{history}{lessons}
 Write the deliverable itself, nothing around it.

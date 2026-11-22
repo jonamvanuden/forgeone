@@ -11,6 +11,7 @@ const state = { route: null, lastJSON: "", artTab: {}, evHidden: new Set(["node.
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const n = (v) => (v == null || Number.isNaN(Number(v)) ? 0 : Number(v));
 const fmtInt = (v) => n(v).toLocaleString("en-US");
+const plural = (v, word) => `${fmtInt(v)} ${word}${n(v) === 1 ? "" : "s"}`;
 function fmtMs(ms) {
   if (ms == null) return "–";
   ms = n(ms);
@@ -700,7 +701,7 @@ async function viewWorkGoal(id) {
     <section class="panel hero">
       <div class="hero-top"><div>
         <h1 class="goal">${esc(g.title)}</h1>
-        <div class="sub">${esc(g.playbook ? `Fixed plan from playbook ${g.playbook}: no planner call, milestones are done when their tasks pass` : g.autonomy === "supervised" ? "Supervised: you approve each milestone" : "Autonomous: an AI approver signs off milestones and may replan")}${g.agent ? `. Web work by ${esc(g.agent)}` : ""}. Plan v${esc(g.plan_version)}, created ${esc(fmtDate(g.created_at))}.</div>
+        <div class="sub">${esc(g.playbook ? `Fixed plan from playbook ${g.playbook}: no planner call, milestones are done when their tasks pass` : g.autonomy === "supervised" ? "Supervised: you approve each milestone" : "Autonomous: an AI approver signs off milestones and may replan")}${g.agent ? `. Web work by ${esc(g.agent)}` : ""}. Plan v${esc(g.plan_version)}, context ${esc(g.context_policy || "default")}, created ${esc(fmtDate(g.created_at))}.</div>
         ${g.success_criteria.length ? `<div class="hero-criteria"><span>Done when</span><ul>${g.success_criteria.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
         ${g.description ? `<details><summary>Show the full description</summary><pre>${esc(g.description)}</pre></details>` : ""}
         <div class="mono">${esc(g.id)}</div></div>
@@ -741,12 +742,12 @@ function contextHTML(c) {
   const rows = c.sections.map((s) => `<tr><td>${esc(s.name)}</td>
     <td class="mono-s">${s.source ? (/^T-[0-9a-f]+$/.test(s.source) ? `<a href="#/t/${esc(s.source)}">${esc(s.source)}</a>` : esc(s.source)) : ""}</td>
     <td class="r">${fmtInt(s.tokens)}</td>
-    <td>${s.status === "cut" ? `<span class="chip bad">cut, ${fmtInt(s.original_tokens - s.tokens)} lost</span>` : s.status === "empty" ? '<span class="muted">empty</span>' : ""}</td></tr>`).join("");
+    <td>${s.status === "cut" ? `<span class="chip bad">cut, ${fmtInt(s.original_tokens - s.tokens)} lost</span>` : s.status === "omitted" ? `<span class="chip bad">left out, ${fmtInt(s.original_tokens)} tokens</span>` : s.status === "empty" ? '<span class="muted">empty</span>' : ""}</td></tr>`).join("");
   const h = c.agent;
   const hist = h ? `<div class="ctx-agent">Agent conversation: ${fmtInt(h.calls?.length || 0)} model calls, about ${fmtTokens(h.sent_tokens_est)} tokens sent in total${
       h.shortened_results ? `, instead of ${fmtTokens(h.without_shortening_est)}: ${fmtInt(h.shortened_results)} older results were shortened` : "; nothing was long enough to shorten"}${
       h.cache_read_tokens ? `. ${fmtTokens(h.cache_read_tokens)} tokens read from the prompt cache` : ""}.</div>` : "";
-  return `<details><summary>Context: about ${fmtTokens(c.tokens_est)} tokens in ${fmtInt(c.sections.length)} parts${c.tokens_billed ? `, ${fmtTokens(c.tokens_billed)} billed` : ""}${c.cut ? `, <span class="warn">${fmtInt(c.cut)} cut</span>` : ""}</summary>
+  return `<details><summary>Context${c.policy ? ` (${esc(c.policy)})` : ""}: about ${fmtTokens(c.tokens_est)} tokens in ${fmtInt(c.sections.length)} parts${c.budget ? ` of a ${fmtTokens(c.budget)} budget` : ""}${c.tokens_billed ? `, ${fmtTokens(c.tokens_billed)} billed` : ""}${c.cut ? `, <span class="warn">${fmtInt(c.cut)} cut</span>` : ""}${c.omitted ? `, <span class="warn">${fmtInt(c.omitted)} left out</span>` : ""}</summary>
     <table class="table ctx"><thead><tr><th>Part</th><th>From</th><th class="r">Tokens</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     ${c.excluded?.length ? `<ul class="plain ctx-ex">${c.excluded.map((e) => `<li><b>Left out:</b> ${esc(e.what)}, because ${esc(e.rule)}.</li>`).join("")}</ul>` : ""}
     ${hist}</details>`;
@@ -766,7 +767,7 @@ function actionHTML(a) {
     ${a.failure_reason ? `<div><span class="chip bad">${esc(a.failure_reason)}</span></div>` : ""}
     ${a.criteria?.length && a.kind !== "verify" ? `<details><summary>${a.kind === "edge_test" ? "Edge cases" : "Checks"} (${a.criteria.length})</summary>${criteriaHTML(a.criteria.map((c) => c.criterion), a.criteria)}</details>` : ""}
     ${a.kind === "verify" && a.criteria?.length ? `<details><summary>Criteria (${a.criteria.filter((c) => c.met).length} of ${a.criteria.length} met)</summary>${criteriaHTML(a.criteria.map((c) => c.criterion), a.criteria)}</details>` : ""}
-    ${ev && ev.opened_urls ? `<details><summary>Evidence: ${fmtInt(ev.tool_calls)} tool calls, ${fmtInt(ev.opened_urls.length)} pages opened${ev.tool_errors ? `, ${fmtInt(ev.tool_errors)} tool errors` : ""}</summary><ul class="plain">${ev.opened_urls.map((u) => `<li class="mono-s">${esc(u)}</li>`).join("")}</ul></details>` : ""}
+    ${ev && ev.opened_urls ? `<details><summary>Evidence: ${plural(ev.tool_calls, "tool call")}, ${plural(ev.opened_urls.length, "page")} opened${ev.tool_errors ? `, ${plural(ev.tool_errors, "tool error")}` : ""}</summary><ul class="plain">${ev.opened_urls.map((u) => `<li class="mono-s">${esc(u)}</li>`).join("")}</ul></details>` : ""}
     ${contextHTML(a.context)}
     ${text ? `<details><summary>Output of this attempt (${fmtInt(text.length)} characters)</summary><pre class="code">${esc(text)}</pre></details>` : ""}
     <div class="act-foot">${a.prompt_version ? `<span>prompt ${esc(a.prompt_version)}</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}${a.run_id ? `<a href="#/run/${esc(a.run_id)}">model calls of this run</a>` : ""}<span class="mono-s">${esc(a.id)}</span></div>
@@ -931,8 +932,8 @@ function contextTable(rows, h) {
   if (!rows.length) return `<div class="empty">No model calls with a context record in this period.</div>`;
   const STAGE_LABEL = { plan: "planning", execute: "execute", verify: "verify", edge_test: "edge test", approve: "approve" };
   return `<div class="scroll-x"><table class="table">
-    <thead><tr><th>Call</th><th class="r">Calls</th><th class="r">Tokens (est.)</th><th class="r hide-sm">Billed</th><th class="r">Cut</th><th class="r hide-sm">Passed when cut</th><th class="r hide-sm">Passed otherwise</th></tr></thead>
-    <tbody>${rows.map((c) => `<tr><td>${esc(STAGE_LABEL[c.stage] || c.stage)}</td><td class="r">${fmtInt(c.calls)}</td>
+    <thead><tr><th>Call</th><th>Policy</th><th class="r">Calls</th><th class="r">Tokens (est.)</th><th class="r hide-sm">Billed</th><th class="r">Cut</th><th class="r hide-sm">Passed when cut</th><th class="r hide-sm">Passed otherwise</th></tr></thead>
+    <tbody>${rows.map((c) => `<tr><td>${esc(STAGE_LABEL[c.stage] || c.stage)}</td><td><span class="chip">${esc(c.policy)}</span></td><td class="r">${fmtInt(c.calls)}</td>
       <td class="r">${fmtTokens(c.tokens_est)}</td><td class="r hide-sm">${c.tokens_billed != null ? fmtTokens(c.tokens_billed) : "–"}</td>
       <td class="r">${pctTxt(c.cut_rate)}</td><td class="r hide-sm">${pctTxt(c.pass_when_cut)}</td><td class="r hide-sm">${pctTxt(c.pass_uncut)}</td></tr>`).join("")}</tbody></table></div>
     ${h && h.runs ? `<div class="panel-body muted" style="font-size:12.5px">Agent runs: ${fmtInt(h.runs)}, ${fmtInt(h.shortened)} older tool results shortened; about ${fmtTokens(h.sent)} tokens sent instead of ${fmtTokens(h.without)}${h.without ? ` (${pctTxt(1 - h.sent / h.without)} less)` : ""}${h.cache_read ? `; ${fmtTokens(h.cache_read)} read from the prompt cache` : ""}.</div>` : ""}`;

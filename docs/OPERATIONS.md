@@ -5,7 +5,7 @@ All commands from `~/ForgeOne` with the venv active: `source .venv/bin/activate`
 ## Deploy a change from GitHub
 ```bash
 cd ~/ForgeOne && git pull && pip install -e . -q && systemctl restart forgeone-dashboard
-forgeone db migrate                       # only needed when a migration was added; always safe (004 goals, 005 playbooks, 006 automatable, 007 context)
+forgeone db migrate                       # only needed when a migration was added; always safe (004 goals, 005 playbooks, 006 automatable, 007 context, 008 context policy)
 ```
 
 ## Agent repositories
@@ -57,6 +57,27 @@ access: tasks are done by plain model calls. Approvals never continue the goal b
 `forgeone goal run` again. The dashboard's **Needs you** page lists everything waiting, with the command.
 Optional: `FORGEONE_STRONG_MODEL` (difficulty 4–5, default claude-sonnet-5-5), `FORGEONE_JUDGE_MODEL`
 (verify, edge test, approve; default the builder model).
+
+## Models (Claude and RunPod/Qwen3)
+Claude models are built in. Other models go in `models.yaml` (copy `models.example.yaml`); the key
+goes in `.env` as `RUNPOD_API_KEY`. `models.yaml` is not in git, so `git pull` never overwrites it.
+```bash
+forgeone models list                       # every model: provider, context window, price
+forgeone models check qwen3-8b             # 3 test calls: plain answer, tool call, structured JSON
+FORGEONE_MODEL=qwen3-8b FORGEONE_JUDGE_MODEL=qwen3-8b forgeone goal new "..." --run   # one goal on Qwen
+```
+RunPod endpoint (Serverless > New endpoint > vLLM): `MODEL_NAME=Qwen/Qwen3-8B`,
+`ENABLE_AUTO_TOOL_CHOICE=true`, `TOOL_CALL_PARSER=hermes` (without these two, tool calls fail), and
+`MAX_MODEL_LEN` equal to `context_window`. Set Active workers to 1 if cold starts are too slow.
+In an eval variant: `model: qwen3-8b`.
+
+## Context policy (how much each model call is given)
+`--context lean|default|rich` on `forgeone goal new`. lean: half the token budget, no earlier attempts
+or lessons, agent keeps 1 page in full. rich: 1.5x the budget, up to 5 lessons from earlier goals,
+agent keeps 6 pages in full. Budgets are per kind of call and capped at 60% of the model's window.
+In an eval variant: `context: lean`, or `context: {base: default, keep_full: 5}`.
+The Support page compares policies (pass rate and cost per call); every action's **Context** fold-out
+shows what it got, what was cut, earlier attempts and lessons.
 
 ## Running and evaluating agents
 One-time on the server: `pip install -e . && playwright install --with-deps chromium`.

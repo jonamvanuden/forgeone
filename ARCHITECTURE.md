@@ -29,9 +29,9 @@ one responsibility and has its own README when it is not built yet.
 | `tools/` | Deterministic tools: Playwright browser (SSRF-blocked), web_search, open_page, click, find_on_page, write_report | working |
 | `registry/` | Agent versions, champion/challenger, publishing | later |
 | `safety/` | Limits on agents: allowlist, budgets, injection defences, sandbox | partly |
-| `context/` | What each model call sees: context packs with a manifest per call (sections, tokens, cuts, exclusions), agent history shortening, prompt caching | working; budgets and memory next |
-| `memory/` | What persists across goals (lessons, earlier feedback), served through `context/` | later |
-| `llm/` | Model access (`chat_model`) and pricing (`PRICES`) | working |
+| `context/` | What each model call sees: context packs with a manifest per call (sections, tokens, cuts, exclusions), agent history shortening, prompt caching | working: budgets per model and kind of call, policies lean/default/rich |
+| `memory/` | What persists across goals: lessons from failed attempts at similar tasks, served through `context/` | working |
+| `llm/` | Model access (`chat_model`), model registry (Claude built in, others from `models.yaml`), an OpenAI-compatible adapter for RunPod/Qwen3, pricing | working |
 | `observability/` | Structured events: context, events, tracing, LLM logger, redaction | working |
 | `store/` | Postgres sink, writer, backfill, **versioned migrations** | working |
 | `control_room/` | Dashboard: Starlette JSON API + single-page UI | working |
@@ -152,3 +152,25 @@ for prompt caching. Cache reads (10%) and writes (125%) are priced in `llm/prici
 
 This makes context measurable like models: `v_context` shows per kind of call how much context
 it gets, how often it is cut and whether cut calls pass less often.
+
+### Budgets, memory and policies
+Each kind of call has a token target (`context/budget.py`: execute 24k, verify 16k, agent 40k, …),
+scaled by the goal's policy and capped at 60% of the model's context window, so a 32k Qwen model
+gets smaller packs than a 200k Claude model. When a pack is over budget, cuttable parts are
+shortened first, then the lowest-priority parts are left out (lessons, then earlier attempts, then
+dependencies), and only then required parts are cut. Every step is in the manifest.
+
+Memory (`memory/lessons.py`): an executor gets every earlier failed attempt of its own task, and
+lessons from failed attempts at similar tasks of earlier goals (same task type, similar title;
+your rejections first, and whether it passed after that).
+
+A **context policy** (`context/policy.py`: lean, default, rich, or overrides) is stored on the goal
+and on eval variants, so context can be compared like models: `v_context_policy` and the Support page.
+
+## Models
+`llm/registry.py` knows every model: Claude built in, the rest from `models.yaml`. `chat_model()`
+returns `ChatAnthropic` for Claude and `OpenAICompatChat` (`llm/openai_compat.py`) for RunPod and
+other OpenAI-compatible servers. The adapter speaks the same interface the rest of ForgeOne uses
+(`invoke`, `bind_tools`, `with_structured_output`, token usage, logging callbacks), strips Qwen3's
+`<think>` blocks, retries on 429/5xx and cold starts, and uses vLLM guided decoding for JSON.
+Prices for registered models come from `models.yaml`.

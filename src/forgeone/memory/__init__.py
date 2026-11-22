@@ -1,1 +1,4 @@
-"""Memory and knowledge (later): what agents and the builder learn across runs. See README.md."""
+"""Memory: what ForgeOne learned from earlier work, served to model calls through context/."""
+from .lessons import Lesson, find_lessons
+
+__all__ = ["Lesson", "find_lessons"]

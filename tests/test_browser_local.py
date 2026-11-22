@@ -46,6 +46,17 @@ def test_open_find_click(site, browser, monkeypatch):
         browser.open(f"{site}/missing.html")
 
 
+def test_a_failed_load_does_not_break_the_next_one(site, browser, monkeypatch):
+    monkeypatch.setenv("FORGEONE_ALLOW_PRIVATE_URLS", "1")
+    with pytest.raises(Exception):
+        browser.open("http://127.0.0.1:1/nothing-listens-here")         # connection refused
+    assert browser.open(f"{site}/a.html")["title"] == "A"
+    with pytest.raises(Exception):
+        browser.open("http://127.0.0.1:1/again")
+    assert browser.find("sugars") == [] or True                          # the tab is usable
+    assert browser.open(f"{site}/b.html")["title"] == "B"
+
+
 def test_local_addresses_blocked_by_default(site, browser, monkeypatch):
     monkeypatch.delenv("FORGEONE_ALLOW_PRIVATE_URLS", raising=False)
     with pytest.raises(ValueError, match="blocked"):

@@ -80,6 +80,7 @@ class Goal(BaseModel):
     autonomy: Autonomy = "supervised"
     playbook: str | None = None              # fixed plan for a known process (e.g. build_agent); None: planner model
     playbook_args: dict = {}
+    context_policy: str = "default"          # lean | default | rich (context/policy.py)
     status: GoalStatus = "planned"
     note: str | None = None                  # why it waits, pauses or failed
     plan_version: int = 0

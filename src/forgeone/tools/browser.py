@@ -48,7 +48,7 @@ class PlaywrightBrowser:
     def __init__(self, headless: bool = True):
         self._headless = headless
         self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forgeone-browser")
-        self._pw = self._browser = self._page = None
+        self._pw = self._browser = self._page = self._context = None
 
     def _run(self, fn, *args):
         return self._exec.submit(fn, *args).result()
@@ -60,9 +60,31 @@ class PlaywrightBrowser:
             args = ["--no-sandbox"] if hasattr(os, "geteuid") and os.geteuid() == 0 else []
             self._pw = sync_playwright().start()
             self._browser = self._pw.chromium.launch(headless=self._headless, args=args)
-            self._page = self._browser.new_context(user_agent=USER_AGENT).new_page()
+            self._context = self._browser.new_context(user_agent=USER_AGENT)
+            self._page = self._context.new_page()
             self._page.set_default_timeout(NAV_TIMEOUT_MS)
         return self._page
+
+    def _fresh_page(self):
+        """After a failed load Chromium moves the tab to an error page a moment later, which
+        interrupts the next load. Continue in a new tab instead."""
+        old, self._page = self._page, self._context.new_page()
+        self._page.set_default_timeout(NAV_TIMEOUT_MS)
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return self._page
+
+    def _goto(self, url: str):
+        page = self._ensure()
+        try:
+            return page, page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:
+            page = self._fresh_page()
+            if "interrupted by another navigation" in str(e):     # the error page of an earlier failure
+                return page, page.goto(url, wait_until="domcontentloaded")
+            raise
 
     @staticmethod
     def _snapshot(page) -> dict:
@@ -81,8 +103,7 @@ class PlaywrightBrowser:
     def open(self, url: str) -> dict:
         def op():
             check_url(url)
-            page = self._ensure()
-            resp = page.goto(url, wait_until="domcontentloaded")
+            page, resp = self._goto(url)
             if resp is not None and resp.status >= 400:   # an error page is a failed tool call, not content
                 raise RuntimeError(f"HTTP {resp.status} for {url}")
             return self._snapshot(page)
@@ -115,8 +136,7 @@ class PlaywrightBrowser:
     def search(self, query: str, max_results: int = 8) -> list[dict]:
         """Web search through DuckDuckGo's HTML page (no API key)."""
         def op():
-            page = self._ensure()
-            page.goto(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}", wait_until="domcontentloaded")
+            page, _ = self._goto(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}")
             out = []
             for r in page.query_selector_all(".result")[:max_results]:
                 a, snip = r.query_selector("a.result__a"), r.query_selector(".result__snippet")
@@ -134,7 +154,7 @@ class PlaywrightBrowser:
                 if self._pw:
                     self._pw.stop()
             finally:
-                self._pw = self._browser = self._page = None
+                self._pw = self._browser = self._page = self._context = None
         try:
             self._run(op)
         finally:

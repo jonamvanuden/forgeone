@@ -58,11 +58,12 @@ def _run_one(spec: AgentSpec, agent: str, task: str, variant: Variant, case_id: 
              llm_factory: Callable | None, run_fields: dict) -> AgentTrace:
     from ..runtime import RunConfig, run_agent
 
+    policy = variant.context_policy
     cfg = RunConfig(model=variant.resolved_model, variant=variant.name, max_steps=variant.max_steps,
                     max_cost_usd=variant.max_cost_usd, tools=list(variant.tools) if variant.tools else None,
-                    prompt_suffix=variant.prompt_suffix)
+                    prompt_suffix=variant.prompt_suffix, history=policy.history(variant.resolved_model))
     with start_run("agent.run", agent=agent, task=task, case_id=case_id, variant=variant.name,
-                   model=cfg.model, **run_fields) as run_id:
+                   model=cfg.model, context_policy=policy.name, **run_fields) as run_id:
         trace = run_agent(spec, task, cfg, browser=browser, case_id=case_id, agent=agent,
                           reports_dir=settings().runs_dir / run_id,
                           llm=llm_factory(cfg.model) if llm_factory else None, callbacks=[LLMCallLogger()])

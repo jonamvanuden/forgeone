@@ -1,0 +1,24 @@
+# Copy to models.yaml (next to agents.yaml) and fill in your endpoint id.
+# Claude models are built in and need no entry. No secrets here: the RunPod key comes from
+# the RUNPOD_API_KEY environment variable (.env), or from api_key_env per model.
+models:
+  qwen3-8b:                         # the name you use everywhere: env vars, eval variants, CLI
+    provider: runpod                # runpod | openai_compatible
+    endpoint_id: YOUR_ENDPOINT_ID   # RunPod console > Serverless > your vLLM endpoint
+    model: Qwen/Qwen3-8B            # must match MODEL_NAME on the endpoint
+    context_window: 32768           # budgets are capped at 60% of this
+    max_output: 4096
+    price_in: 0.05                  # USD per million tokens, an estimate (RunPod bills GPU seconds)
+    price_out: 0.20
+    thinking: false                 # Qwen3: skip the <think> phase (faster, cleaner JSON)
+    structured: json_schema         # json_schema (vLLM guided decoding) | prompt
+    timeout_s: 300                  # a cold start can take minutes
+    max_retries: 2
+
+  # Any other OpenAI-compatible server (vLLM, Ollama, a gateway):
+  # local-llama:
+  #   provider: openai_compatible
+  #   base_url: http://10.0.0.5:8000/v1
+  #   model: meta-llama/Llama-3.1-8B-Instruct
+  #   api_key_env: LOCAL_LLM_KEY
+  #   context_window: 16384

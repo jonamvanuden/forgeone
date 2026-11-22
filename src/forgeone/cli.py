@@ -15,6 +15,7 @@
     forgeone approve ID [--note TEXT]        (a task, a milestone, or a goal with one approval waiting)
     forgeone reject ID --note TEXT
     forgeone support [--days 7|30|90|all] [--builds]
+    forgeone models list | check NAME
     forgeone control-room [--port 8501]
 """
 from __future__ import annotations
@@ -219,7 +220,7 @@ def _print_tree(tree, actions: bool = False) -> None:
     p = progress(tree)
     budget = f" of {_usd(g.budget_usd)}" if g.budget_usd is not None else ""
     print(f"\n{g.id}  {g.title}\n  {g.status.upper()}  plan v{g.plan_version}  {p['done']}/{p['tasks']} tasks done  "
-          f"spent {_usd(g.cost_usd)}{budget}  {g.autonomy}{'  agent ' + g.agent if g.agent else ''}")
+          f"spent {_usd(g.cost_usd)}{budget}  {g.autonomy}  context {g.context_policy}{'  agent ' + g.agent if g.agent else ''}")
     if g.note:
         print(f"  note: {g.note}")
     for m in tree.active_milestones():
@@ -259,7 +260,7 @@ def _goal(a):
             desc = Path(a.file).read_text(encoding="utf-8")
         goal = Goal(title=a.title, description=desc, agent=a.agent, agent_type=a.type,
                     success_criteria=a.criteria or [], constraints=a.constraint or [], budget_usd=a.budget,
-                    autonomy=a.autonomy)
+                    autonomy=a.autonomy, context_policy=a.context)
         print(f"planning {goal.id} ...")
         tree = engine.create(goal)
         _print_tree(tree)
@@ -354,6 +355,71 @@ def _support(a):
     print()
 
 
+def _models(a):
+    import os
+    import time
+
+    from pydantic import BaseModel
+
+    from .llm import chat_model
+    from .llm.pricing import call_cost, usage_of
+    from .llm.registry import model_info, models_file, registry
+
+    if a.action == "list":
+        print(f"models (built in + {models_file()}):")
+        for name, m in registry().items():
+            key = "" if m.provider == "anthropic" else ("  key set" if os.getenv(m.key_env) else f"  {m.key_env} NOT SET")
+            price = (f"${m.price_in}/${m.price_out} per M" if m.price_in is not None else "list price")
+            print(f"  {name:<22}{m.provider:<18}{m.provider_model:<26}{m.context_window:>8} ctx  {price}{key}")
+        return
+    if not a.name:
+        raise SystemExit("forgeone: forgeone models check MODEL")
+    info = model_info(a.name)
+    llm = chat_model(a.name)
+    print(f"checking {a.name} ({info.provider}, {info.provider_model}); a cold serverless worker can take minutes")
+
+    def timed(label, fn):
+        t0 = time.perf_counter()
+        try:
+            ok, detail, msg = fn()
+        except Exception as e:  # noqa: BLE001
+            ok, detail, msg = False, f"{type(e).__name__}: {e}", None
+        tin, tout, _, _ = usage_of(msg) if msg is not None else (0, 0, 0, 0)
+        cost = call_cost(a.name, tin, tout)
+        print(f"  {'OK  ' if ok else 'FAIL'} {label:<18}{time.perf_counter() - t0:6.1f} s  {tin}+{tout} tokens"
+              f"  {'' if cost is None else f'${cost:.5f}'}  {detail[:110]}")
+        return ok
+
+    def plain():
+        m = llm.invoke("Reply with exactly the word: ready")
+        return "ready" in str(m.content).lower(), repr(str(m.content)[:60]), m
+
+    def tools():
+        bound = llm.bind_tools([{"name": "web_search", "description": "search the web",
+                                 "input_schema": {"type": "object", "properties": {"query": {"type": "string"}},
+                                                  "required": ["query"]}}])
+        m = bound.invoke("Use the web_search tool to search for: WHO free sugars guideline")
+        calls = getattr(m, "tool_calls", None) or []
+        return bool(calls), (f"called {calls[0]['name']}({calls[0]['args']})" if calls else
+                             "no tool call: set ENABLE_AUTO_TOOL_CHOICE=true and TOOL_CALL_PARSER=hermes"), m
+
+    class Answer(BaseModel):
+        city: str
+        country: str
+
+    def structured():
+        out = llm.with_structured_output(Answer, method="json_schema", include_raw=True).invoke(
+            "What is the capital of France? Give city and country.")
+        p = out["parsed"]
+        return p is not None, (p.model_dump_json() if p else f"did not parse: {out['parsing_error']}"), out["raw"]
+
+    results = [timed("plain answer", plain), timed("tool call", tools), timed("structured output", structured)]
+    print("all good: usable for agents, planning and checks" if all(results) else
+          "not all checks passed: see above")
+    if not all(results):
+        raise SystemExit(1)
+
+
 def _decide(a):
     from .work import decide
 
@@ -421,11 +487,18 @@ def main(argv: list[str] | None = None) -> None:
     go.add_argument("--budget", type=float, default=None, help="total budget in USD")
     go.add_argument("--autonomy", default="supervised", choices=["supervised", "autonomous"],
                     help="supervised: you approve every milestone; autonomous: an AI approver does, and it may replan")
+    go.add_argument("--context", default="default", choices=["lean", "default", "rich"],
+                    help="how much context model calls get: budgets, memory, agent history (context/policy.py)")
     go.add_argument("--run", action="store_true", help="start working right after planning")
     go.add_argument("--max-tasks", type=int, default=None, help="stop after this many tasks")
     go.add_argument("--reason", default=None, help="why you replan")
     go.add_argument("--actions", action="store_true", help="show: list every action")
     go.set_defaults(fn=_goal)
+
+    mo = sub.add_parser("models", help="models: list, check NAME (e.g. a RunPod Qwen3 endpoint)")
+    mo.add_argument("action", choices=["list", "check"])
+    mo.add_argument("name", nargs="?")
+    mo.set_defaults(fn=_models)
 
     su = sub.add_parser("support", help="what failed, what was harder than planned, what might not need AI")
     su.add_argument("--days", default="30", choices=["7", "30", "90", "all"])

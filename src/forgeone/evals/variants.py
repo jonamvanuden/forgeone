@@ -11,6 +11,11 @@ Defined by the owner in the agent repo, evals/variants.yaml:
         model: claude-haiku-5-5
         max_steps: 15
         tools: [web_search, open_page, write_report]
+      - name: qwen3                     # a model from models.yaml, e.g. Qwen3 on RunPod serverless
+        model: qwen3-8b
+      - name: haiku-lean-context        # same model, less context: lean | default | rich, or overrides
+        model: claude-haiku-5-5
+        context: {base: lean, keep_full: 2}
 
 Change ONE thing per variant, so the results say what made the difference.
 """
@@ -20,7 +25,7 @@ import hashlib
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..config import settings
 from ..spec.tools import ToolName
@@ -33,6 +38,21 @@ class Variant(BaseModel):
     max_cost_usd: float | None = Field(default=None, gt=0)
     tools: list[ToolName] | None = None
     prompt_suffix: str = ""
+    context: str | dict | None = Field(default=None, description="context policy: lean | default | rich | overrides")
+
+    @field_validator("context")
+    @classmethod
+    def _context(cls, v):
+        from ..context import resolve
+
+        resolve(v)                      # fails early on unknown presets or settings
+        return v
+
+    @property
+    def context_policy(self):
+        from ..context import resolve
+
+        return resolve(self.context)
 
     @property
     def resolved_model(self) -> str:
