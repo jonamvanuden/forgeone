@@ -195,8 +195,8 @@ async def require_login(request: Request, call_next):
 # ---------------------------------------------------------------- CLI: make a hash
 def main() -> None:
     pw = getpass.getpass("New Control Room password: ")
-    if len(pw) < 12:
-        sys.exit("Use at least 12 characters.")
+    if len(pw) < 8:
+        sys.exit("Use at least 8 characters.")
     if getpass.getpass("Repeat it: ") != pw:
         sys.exit("The two passwords differ.")
     print(hash_password(pw))
