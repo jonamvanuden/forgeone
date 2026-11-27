@@ -603,28 +603,29 @@ async function viewWork() {
   state.lastJSON = data;
   setCrumbs([{ label: "Goals" }]);
   if (!w.migrated) { main.innerHTML = notMigrated("Goals"); return true; }
-  const k = w.kpis;
-  const kpi = (icon, label, value, foot, cls = "") =>
-    `<div class="panel kpi ${cls}"><div class="label">${ICON[icon]}${esc(label)}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
-  const active = w.goals.filter((g) => !["done", "cancelled", "failed"].includes(g.status));
-  const closed = w.goals.filter((g) => ["done", "cancelled", "failed"].includes(g.status));
   const ask = w.inbox.length + w.attention.length;
+  const when = (g) => g.created_at || g.updated_at || "";
+  const goals = [...w.goals].sort((x, y) => String(when(y)).localeCompare(String(when(x))));
+  const rows = goals.map((g) => {
+    const msDone = g.milestones.filter((m) => m.status === "done").length;
+    return `<tr data-href="#/g/${esc(g.id)}" class="st-${esc(g.status)}">
+      <td><a class="row-link" href="#/g/${esc(g.id)}">${esc(g.title)}</a>
+        ${g.note && !["done"].includes(g.status) ? `<span class="why">${esc(g.note)}</span>` : ""}</td>
+      <td>${status(g.status)}</td>
+      <td class="r">${fmtInt(msDone)}/${fmtInt(g.milestones.length)}</td>
+      <td class="hide-sm">${g.agent ? esc(g.agent) : '<span class="muted">–</span>'}</td>
+      <td class="r hide-sm">${esc(budgetText(g))}</td>
+      <td class="hide-sm">${esc(fmtDate(when(g)))}</td></tr>`;
+  }).join("");
   main.innerHTML = `
     <div class="page-head"><div><h1>Goals</h1>
-      <p>${active.length ? `${fmtInt(active.length)} ${active.length === 1 ? "goal is" : "goals are"} in progress.` : "No goal in progress."}
-      ${ask ? ` <a href="#/inbox">${fmtInt(ask)} ${ask === 1 ? "thing needs" : "things need"} your decision.</a>` : " Nothing waits for you."}</p></div>
+      <p>Every goal ForgeOne has worked on, newest first. Click one to see its milestones.
+      ${ask ? ` <a href="#/inbox">${fmtInt(ask)} ${ask === 1 ? "thing needs" : "things need"} your decision.</a>` : ""}</p></div>
       <div class="head-actions"><a class="btn" href="#/new?kind=build">Build an agent</a><a class="btn primary" href="#/new">New goal</a></div></div>
-    <div class="grid g-kpi">
-      ${kpi("live", "Goals in progress", fmtInt(k.active), `${fmtInt(w.goals.length)} in total`)}
-      ${kpi("time", "Needs you", fmtInt(k.needs_you), k.needs_you ? `<a href="#/inbox">open the inbox</a>` : "all clear", k.needs_you ? "attn" : "")}
-      ${kpi("ok", "Tasks done", fmtInt(k.done_7d), "this week")}
-      ${kpi("rate", "Right first time", k.first_try_rate == null ? "–" : `${Math.round(k.first_try_rate * 100)}<small>%</small>`, `of ${fmtInt(k.closed_30d)} tasks, last 30 days`)}
-      ${kpi("spend", "Spend", esc(fmtUSD(k.spend_7d)), "this week, all goals")}
-    </div>
-    ${ask ? panel("Needs your decision", `<a href="#/inbox">Open the inbox</a>`, `<div class="panel-body flush">${askList(w.inbox.slice(0, 3), w.attention.slice(0, 2))}</div>`) : ""}
-    ${acts && acts.jobs.length ? panel("Started from the dashboard", acts.jobs.some((j) => j.state === "running") ? "running now and recent" : "recent", `<div class="panel-body flush">${jobsList(acts.jobs.slice(0, 5))}</div>`) : ""}
-    ${panel("In progress", "click a goal for its milestones and tasks", `<div class="panel-body flush">${goalCards(active)}</div>`)}
-    ${closed.length ? panel("Finished, failed or cancelled", "", `<div class="panel-body flush">${goalCards(closed)}</div>`) : ""}`;
+    ${acts && acts.jobs.some((j) => j.state === "running") ? panel("Running now", "", `<div class="panel-body flush">${jobsList(acts.jobs.filter((j) => j.state === "running"))}</div>`) : ""}
+    ${goals.length ? `<section class="panel"><div class="scroll-x"><table class="table tasks list">
+      <thead><tr><th>Goal</th><th>Status</th><th class="r">Milestones</th><th class="hide-sm">Agent</th><th class="r hide-sm">Spent</th><th class="hide-sm">Started</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></section>` : goalCards([])}`;
   return true;
 }
 
@@ -684,6 +685,72 @@ function milestoneHTML(m, current) {
 }
 
 async function viewWorkGoal(id) {
+  const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), api("/api/actions").catch(() => null)]);
+  const job = acts?.jobs.find((j) => j.goal_id === id && j.state === "running");
+  const data = JSON.stringify([d, acts?.enabled, job?.id, !!getToken()]);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  const g = d.goal, p = d.progress;
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: g.title }]);
+  const rows = d.milestones.map((m) => `<tr data-href="#/g/${esc(g.id)}/m/${esc(m.id)}" class="st-${esc(m.status)}">
+      <td class="tcode">${esc(ms(m))}</td>
+      <td><a class="row-link" href="#/g/${esc(g.id)}/m/${esc(m.id)}">${esc(m.title)}</a>${m.note ? `<span class="why">${esc(m.note)}</span>` : ""}</td>
+      <td>${status(m.status)}</td>
+      <td class="r">${fmtInt(m.progress.done)}/${fmtInt(m.progress.tasks)}</td>
+      <td class="r hide-sm">${m.cost_usd ? esc(fmtUSD(m.cost_usd)) : '<span class="muted">–</span>'}</td></tr>`).join("");
+  main.innerHTML = `
+    <section class="panel hero">
+      <div class="hero-top"><div>
+        <h1 class="goal">${esc(g.title)}</h1>
+        <div class="sub">${fmtInt(p.done)} of ${fmtInt(p.tasks)} tasks done · spent ${esc(budgetText(g))}${g.agent ? ` · agent ${esc(g.agent)}` : ""} · started ${esc(fmtDate(g.created_at))}</div>
+        ${g.success_criteria.length ? `<div class="hero-criteria"><span>Done when</span><ul>${g.success_criteria.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
+        ${g.description ? `<details><summary>Show the full description</summary><pre>${esc(g.description)}</pre></details>` : ""}
+        <div class="mono">${esc(g.id)}</div></div>
+        <div>${status(g.status)}</div></div>
+    </section>
+    ${runButton(g, acts, job)}
+    ${g.note && g.status !== "done" ? `<div class="notice ${g.status === "failed" ? "bad" : ""}"><b>${esc(STATUS_TEXT[g.status] || g.status)}.</b> ${esc(g.note)}</div>` : ""}
+    ${panel("Milestones", "click a milestone to see its tasks", `<div class="scroll-x"><table class="table tasks list">
+      <thead><tr><th>#</th><th>Milestone</th><th>Status</th><th class="r">Tasks</th><th class="r hide-sm">Cost</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`)}
+    <p class="muted" style="margin-top:14px"><a href="#/g/${esc(g.id)}/full">Full report</a>: plan history, spend by stage and failures.</p>`;
+  return true;
+}
+
+async function viewMilestone(goalId, msId) {
+  const d = await api(`/api/work/goals/${encodeURIComponent(goalId)}`);
+  const data = JSON.stringify([d, msId]);
+  if (data === state.lastJSON) return false;
+  state.lastJSON = data;
+  const g = d.goal, m = d.milestones.find((x) => x.id === msId);
+  if (!m) { main.innerHTML = `<div class="alert"><b>Milestone not found.</b> <a href="#/g/${esc(g.id)}">Back to the goal</a></div>`; return true; }
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: g.title, href: `#/g/${g.id}` }, { label: `${ms(m)} ${m.title}` }]);
+  const appr = m.approval;
+  const rows = m.tasks.map((t) => `<tr class="${t.depth > 1 ? "sub" : ""} st-${esc(t.status)}">
+      <td class="tcode">${esc(t.code)}</td>
+      <td><b>${esc(t.title)}</b>
+        ${["failed", "blocked"].includes(t.status) && t.failure_detail ? `<span class="why">${esc(t.failure_reason || "")}: ${esc(t.failure_detail.slice(0, 160))}</span>` : ""}</td>
+      <td>${status(t.status)}</td>
+      <td class="r hide-sm">${t.container ? "" : `${fmtInt(t.attempts)}/${fmtInt(t.max_attempts)}`}</td>
+      <td class="r hide-sm">${t.cost_usd ? esc(fmtUSD(t.cost_usd)) : '<span class="muted">–</span>'}</td>
+      <td class="r"><a class="btn" href="#/t/${esc(t.id)}">Execution info</a></td></tr>`).join("");
+  main.innerHTML = `
+    <section class="panel hero">
+      <div class="hero-top"><div>
+        <h1 class="goal"><span class="ms-code">${esc(ms(m))}</span> ${esc(m.title)}</h1>
+        <div class="sub">${fmtInt(m.progress.done)} of ${fmtInt(m.progress.tasks)} tasks done · ${esc(fmtUSD(m.cost_usd))} · part of <a href="#/g/${esc(g.id)}">${esc(g.title)}</a></div>
+        ${m.description ? `<p class="ms-desc">${esc(m.description)}</p>` : ""}
+        ${m.done_when.length ? `<div class="hero-criteria"><span>Done when</span><ul>${m.done_when.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : ""}
+        ${appr ? `<div class="sub" style="margin-top:8px">Approval: ${status(appr.status === "pending" ? "waiting" : appr.status)} ${appr.status === "pending" && appr.actor_type === "human" ? "by you" : `by ${esc(appr.actor)}`}${appr.reason ? `, ${esc(appr.reason)}` : ""}</div>` : ""}
+        </div><div>${status(m.status)}</div></div>
+    </section>
+    ${panel("Tasks", "", m.tasks.length ? `<div class="scroll-x"><table class="table tasks list">
+      <thead><tr><th>#</th><th>Task</th><th>Status</th><th class="r hide-sm">Tries</th><th class="r hide-sm">Cost</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>` : `<div class="empty">No tasks.</div>`)}`;
+  return true;
+}
+
+async function viewWorkGoalFull(id) {
   const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), api("/api/actions").catch(() => null)]);
   const job = acts?.jobs.find((j) => j.goal_id === id && j.state === "running");
   const data = JSON.stringify([d, acts?.enabled, job?.id, !!getToken()]);
@@ -785,7 +852,7 @@ async function viewTask(id) {
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
   const t = d.task, g = d.goal, m = d.milestone;
-  setCrumbs([{ label: "Goals", href: "#/" }, { label: g.title, href: `#/g/${g.id}` }, { label: `${ms(m)}`, href: `#/g/${g.id}` }, { label: `${t.code} ${t.title}` }]);
+  setCrumbs([{ label: "Goals", href: "#/" }, { label: g.title, href: `#/g/${g.id}` }, { label: `${ms(m)}`, href: `#/g/${g.id}/m/${m.id}` }, { label: `${t.code} ${t.title}` }]);
   const kpi = (label, value, foot = "") => `<div class="panel kpi"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="foot">${foot}</div></div>`;
   const attempts = {};
   d.actions.forEach((a) => (attempts[a.attempt] = attempts[a.attempt] || []).push(a));
@@ -1336,6 +1403,8 @@ function parse() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
   const parts = path.split("/").map(decodeURIComponent);
   if (parts[0] === "support") return { name: "support", id: query, q: new URLSearchParams(query), nav: "support" };
+  if (parts[0] === "g" && parts[1] && parts[2] === "m" && parts[3]) return { name: "wms", id: `${parts[1]}/${parts[3]}`, gid: parts[1], mid: parts[3], nav: "work" };
+  if (parts[0] === "g" && parts[1] && parts[2] === "full") return { name: "wgoalfull", id: parts[1], nav: "work" };
   if (parts[0] === "g" && parts[1]) return { name: "wgoal", id: parts[1], nav: "work" };
   if (parts[0] === "t" && parts[1]) return { name: "wtask", id: parts[1], nav: "work" };
   if (parts[0] === "new") return { name: "new", id: query, q: new URLSearchParams(query), nav: "work" };
@@ -1364,6 +1433,8 @@ async function render({ quiet = false } = {}) {
     else if (route.name === "goals") await viewGoals();
     else if (route.name === "home") await viewHome();
     else if (route.name === "wgoal") await viewWorkGoal(route.id);
+    else if (route.name === "wms") await viewMilestone(route.gid, route.mid);
+    else if (route.name === "wgoalfull") await viewWorkGoalFull(route.id);
     else if (route.name === "wtask") await viewTask(route.id);
     else if (route.name === "inbox") await viewInbox();
     else if (route.name === "new") await viewNewGoal(route.q);

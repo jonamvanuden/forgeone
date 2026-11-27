@@ -725,3 +725,10 @@ details > summary { cursor: pointer; }
   .form { padding: 18px 16px; }
   .run-bar input { width: 100%; }
 }
+
+/* simple drill-down lists: goals -> milestones -> tasks */
+.table.list tbody tr[data-href] { cursor: pointer; }
+.table.list tbody tr[data-href]:hover td { background: var(--violet-50, #f4f1ff); }
+.table.list td .why { display: block; }
+.table.list .btn { padding: 6px 12px; font-size: 12.5px; }
+.hero .ms-code { font: 600 0.8em var(--mono); color: var(--muted); margin-right: 4px; }
