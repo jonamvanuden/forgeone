@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-import py_compile
 import re
 import subprocess
 import sys
@@ -184,7 +183,7 @@ sys.exit(1 if failed or not names else 0)
 '''
 
 
-def test_package(files: dict[str, str], workdir: Path | None = None) -> list[dict]:
+def verify_package(files: dict[str, str], workdir: Path | None = None) -> list[dict]:
     """Write the package to a temporary folder and test it like a user would: it compiles, it
     imports with this ForgeOne, the framework check passes, its own tests pass. All checks are hard."""
     tmp = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="forgeone-package-"))
@@ -204,12 +203,12 @@ def test_package(files: dict[str, str], workdir: Path | None = None) -> list[dic
     checks.append({"name": "pyproject_is_valid", "hard": True, "passed": ok, "detail": detail})
 
     bad = []
-    for rel in files:
+    for rel, text in files.items():
         if rel.endswith(".py"):
             try:
-                py_compile.compile(str(tmp / rel), doraise=True, cfile=os.devnull)
-            except py_compile.PyCompileError as e:
-                bad.append(f"{rel}: {e.msg}")
+                compile(text, rel, "exec")
+            except SyntaxError as e:
+                bad.append(f"{rel}:{e.lineno}: {e.msg}")
     checks.append({"name": "python_compiles", "hard": True, "passed": not bad,
                    "detail": "; ".join(bad) or "every .py file compiles"})
 

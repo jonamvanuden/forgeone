@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from forgeone.agentkit import Agent, AgentBlueprint, blueprint_checks, check, run_command
 from forgeone.builder import run_build
-from forgeone.builder.package import render_package, test_package
+from forgeone.builder.package import render_package, verify_package
 from forgeone.observability import start_run
 from forgeone.work import Brain, MemoryStore
 from forgeone.work.schemas import CriterionResult, EdgeCase, EdgeReport, Verdict
@@ -196,7 +196,7 @@ def test_rendered_package_passes_its_own_tests(tmp_path):
     assert {"agent/pyproject.toml", "agent/demo/agent.py", "agent/demo/__main__.py", "agent/demo/blueprint.yaml",
             "agent/tests/test_demo.py", "agent/spec.yaml", "agent/README.md"} <= set(files)
     assert all(f.startswith("agent/") for f in files)
-    checks = test_package(files, tmp_path)
+    checks = verify_package(files, tmp_path)
     assert [c["name"] for c in checks if not c["passed"]] == [], checks
     out = subprocess.run([sys.executable, "-m", "demo", "info"], cwd=tmp_path / "agent", capture_output=True, text=True,
                          env={**os.environ, "PYTHONPATH": str(tmp_path / "agent")})
@@ -205,7 +205,7 @@ def test_rendered_package_passes_its_own_tests(tmp_path):
 
 def test_a_broken_blueprint_fails_the_package_tests(tmp_path):
     bp = blueprint(system_prompt="no rule about pages")
-    checks = {c["name"]: c for c in test_package(render_package(bp, "forgeone"), tmp_path)}
+    checks = {c["name"]: c for c in verify_package(render_package(bp, "forgeone"), tmp_path)}
     assert checks["python_compiles"]["passed"]
     assert not checks["imports_and_passes_framework_check"]["passed"]
     assert "untrusted_content_rule" in checks["imports_and_passes_framework_check"]["detail"]

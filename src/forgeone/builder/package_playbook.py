@@ -25,7 +25,7 @@ from ..work.brain import text_version
 from ..work.executors import ExecResult
 from ..work.model import Goal
 from ..work.playbooks import MilestoneTemplate, Playbook, StepContext, StepFailed, TaskTemplate
-from .package import forgeone_requirement, package_name, render_package, test_package
+from .package import forgeone_requirement, package_name, render_package, verify_package
 from .playbook import _exclude_suite, design
 from .playbook import session_fields as _session_fields
 from .prompts import load, render
@@ -169,7 +169,7 @@ def build_package(ctx: StepContext) -> ExecResult:
     requirement = forgeone_requirement()
     files = render_package(bp, requirement)
     workdir = (settings().runs_dir / ctx.run_id / "package") if ctx.run_id else None
-    checks = test_package(files, workdir)
+    checks = verify_package(files, workdir)
     passed = sum(c["passed"] for c in checks)
     text = (f"Package {bp.name} {bp.version()} on {requirement}\n\nFiles:\n" + "\n".join(f"- {f}" for f in files)
             + f"\n\nTests: {passed} of {len(checks)} checks passed"

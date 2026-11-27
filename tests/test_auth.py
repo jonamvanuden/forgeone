@@ -75,6 +75,7 @@ def test_tampered_cookie_rejected(configured):
     c.post("/login", data={"username": "jonam", "password": PASSWORD}, follow_redirects=False)
     good = c.cookies.get(auth.COOKIE)
     name, exp, nonce, sig = good.split("|")
+    c.cookies.clear()                                 # replace the valid cookie, not add a second one
     c.cookies.set(auth.COOKIE, f"{name}|{int(exp) + 99999}|{nonce}|{sig}")
     assert c.get("/api/home").status_code == 401
 
