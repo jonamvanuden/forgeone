@@ -1,6 +1,6 @@
 """The `forgeone` command.
 
-    forgeone build [--agent voyagerone] [--publish branch|main|none] [--goal path.md] [--budget USD] [--legacy]
+    forgeone build [--agent voyagerone] [--publish branch|main|none] [--goal path.md] [--budget USD] [--spec-only] [--legacy]
     forgeone agent list | status <name> | init <name> --path DIR [--remote URL]
     forgeone db migrate | status | backfill
     forgeone run "task" [--agent voyagerone] [--variant NAME] [--spec FILE]
@@ -34,12 +34,16 @@ def _build(a):
         return
     from .builder import run_build
 
-    res = run_build(a.agent, a.goal, publish=a.publish, budget_usd=a.budget, goal_id=a.goal_id)
+    res = run_build(a.agent, a.goal, publish=a.publish, budget_usd=a.budget, goal_id=a.goal_id,
+                    kind="spec" if a.spec_only else "package")
     _print_tree(res["tree"])
     if res["published"]:
         print(res["published"])
     if res["spec_path"]:
         print(f"spec: {res['spec_path']}")
+    pkg = res["spec_path"].parent / "package" / "agent" if res["spec_path"] else None
+    if pkg and pkg.exists():
+        print(f"package: {pkg}   (try it: pip install {pkg} into a fresh venv)")
     if res["status"] != "done":
         raise SystemExit(f"forgeone: build {res['status']}: {res['tree'].goal.note or ''}")
 
@@ -438,6 +442,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="branch: push forgeone/<run-id> (default), main: commit to main, none: don't touch the repo")
     b.add_argument("--budget", type=float, default=None, help="stop the build when it has cost this much (USD)")
     b.add_argument("--goal-id", default=None, help=argparse.SUPPRESS)      # set by the Control Room
+    b.add_argument("--spec-only", action="store_true",
+                   help="only agent/spec.yaml for ForgeOne's runtime, instead of the agent package on forgeone.agentkit")
     b.add_argument("--legacy", action="store_true", help="the original two-node LangGraph build, without tasks and checks")
     b.set_defaults(fn=_build)
 

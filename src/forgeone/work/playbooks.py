@@ -17,7 +17,7 @@ from typing import Any, Callable
 from .brain import Brain
 from .model import Goal, GoalTree, Stage, Task
 
-REGISTRY = {"build_agent": "forgeone.builder.playbook"}
+REGISTRY = {"build_agent": "forgeone.builder.playbook", "build_agent_package": "forgeone.builder.package_playbook"}
 
 
 class StepFailed(Exception):
@@ -90,7 +90,20 @@ class Playbook:
     on_done: dict[str, Callable[[StepContext], None]] = field(default_factory=dict)   # after a step task is accepted
 
 
+_REGISTERED: dict[str, Playbook] = {}
+
+
+def register(playbook: Playbook) -> Playbook:
+    """Make a playbook known by name at run time: agents built on the framework register theirs
+    (e.g. "voyagerone.work") when their package is imported."""
+    _REGISTERED[playbook.name] = playbook
+    return playbook
+
+
 def load(name: str) -> Playbook:
-    if name not in REGISTRY:
-        raise KeyError(f"unknown playbook {name!r} (known: {', '.join(REGISTRY)})")
-    return importlib.import_module(REGISTRY[name]).PLAYBOOK
+    if name in _REGISTERED:
+        return _REGISTERED[name]
+    if name in REGISTRY:
+        return importlib.import_module(REGISTRY[name]).PLAYBOOK
+    raise KeyError(f"unknown playbook {name!r} (known: {', '.join([*REGISTRY, *_REGISTERED])}). "
+                   "An agent's playbook is known once its package is imported (run the agent's own command).")

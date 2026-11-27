@@ -26,8 +26,15 @@ def _store():
 
 
 def run_build(agent: str = "voyagerone", goal_file: str | Path | None = None, publish: str = "branch",
-              budget_usd: float | None = None, store=None, goal_id: str | None = None, brain=None, repo: AgentRepo | None = None) -> dict:
-    """Returns {"run_id", "goal_id", "status", "tree", "spec_path", "published"}."""
+              budget_usd: float | None = None, store=None, goal_id: str | None = None, brain=None, repo: AgentRepo | None = None,
+              kind: str = "spec") -> dict:
+    """Returns {"run_id", "goal_id", "status", "tree", "spec_path", "published"}.
+
+    kind "package": the agent as an installable package on forgeone.agentkit (playbook build_agent_package);
+    kind "spec": only agent/spec.yaml, run by ForgeOne's own runtime (playbook build_agent)."""
+    if kind not in ("spec", "package"):
+        raise ValueError(f"unknown build kind {kind!r}")
+    package = kind == "package"
     from ..work import Engine, Goal
 
     if repo is None and (goal_file is None or publish != "none"):
@@ -42,9 +49,12 @@ def run_build(agent: str = "voyagerone", goal_file: str | Path | None = None, pu
     goal = Goal(
         **({"id": goal_id} if goal_id else {}),
         title=name if name.lower().startswith("build") else f"Build {agent}: {name}", description=text, agent_type="builder",
-        autonomy="autonomous", playbook="build_agent", budget_usd=budget_usd,
-        success_criteria=[f"agent/spec.yaml for {agent} passes its checks, review and edge tests",
-                          "It is published for review, or identical to the current version"],
+        autonomy="autonomous", playbook="build_agent_package" if package else "build_agent", budget_usd=budget_usd,
+        success_criteria=([f"The {agent} blueprint passes the framework checks, review and edge tests",
+                           f"The {agent} package compiles, imports and passes its own tests",
+                           "It is published for review, or identical to the current version"] if package else
+                          [f"agent/spec.yaml for {agent} passes its checks, review and edge tests",
+                           "It is published for review, or identical to the current version"]),
         constraints=["Tools only from the allowlist", "ForgeOne writes only inside agent/ of the agent repository"],
         playbook_args={"agent": agent, "publish": publish, "model": model, "goal_file": str(goal_path),
                        "repo_path": str(repo.path) if repo else None,
@@ -54,7 +64,7 @@ def run_build(agent: str = "voyagerone", goal_file: str | Path | None = None, pu
         engine.create(goal)                          # one session for planning and working
         tree = engine.run(goal.id)
     spec_path = settings().runs_dir / run_id / "spec.yaml"
-    pub = next((t for t in tree.tasks if t.step == "builder.publish"), None)
+    pub = next((t for t in tree.tasks if t.step in ("builder.publish", "builder.publish_package")), None)
     return {"run_id": run_id, "goal_id": goal.id, "status": tree.goal.status, "tree": tree,
             "spec_path": spec_path if spec_path.exists() else None,
             "published": pub.output if pub and pub.status == "done" else None}
