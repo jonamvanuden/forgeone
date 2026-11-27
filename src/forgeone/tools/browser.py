@@ -6,10 +6,14 @@ Setup on a new machine: `pip install playwright && playwright install --with-dep
 """
 from __future__ import annotations
 
+import html
 import ipaddress
+import json
 import os
 import re
 import socket
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote_plus, urljoin, urlparse
 
@@ -42,6 +46,38 @@ def check_url(url: str) -> None:
         raise ValueError("url must start with http:// or https://")
     if os.getenv("FORGEONE_ALLOW_PRIVATE_URLS") != "1" and is_private_url(url):
         raise ValueError("blocked: private or local network address")
+
+
+_DDG_BLOCKED = re.compile(r"anomaly|captcha|bots use DuckDuckGo|challenge-form", re.I)
+BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+
+
+class SearchUnavailable(RuntimeError):
+    """The search backend refused or failed: the agent should say so, not report 'no results'."""
+
+
+def _plain(text: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", text or "")).strip()
+
+
+def brave_search(query: str, key: str, max_results: int = 8, timeout: float = 20) -> list[dict]:
+    """Brave Search API (https://brave.com/search/api/), plain HTTPS, no browser needed."""
+    url = f"{BRAVE_URL}?q={quote_plus(query)}&count={max(1, min(max_results, 20))}"
+    req = Request(url, headers={"Accept": "application/json", "X-Subscription-Token": key,
+                                "User-Agent": "ForgeOne-VoyagerOne"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except HTTPError as e:
+        hint = {401: "the API key is wrong", 403: "the API key is not allowed", 429: "rate or quota limit reached"}
+        raise SearchUnavailable(f"Brave Search returned HTTP {e.code}: {hint.get(e.code, 'request failed')}") from e
+    except (URLError, TimeoutError, ValueError) as e:
+        raise SearchUnavailable(f"Brave Search could not be reached: {e}") from e
+    out = []
+    for r in (data.get("web") or {}).get("results", [])[:max_results]:
+        if r.get("url"):
+            out.append({"title": _plain(r.get("title", "")), "url": r["url"], "snippet": _plain(r.get("description", ""))})
+    return out
 
 
 class PlaywrightBrowser:
@@ -134,7 +170,11 @@ class PlaywrightBrowser:
         return self._run(op)
 
     def search(self, query: str, max_results: int = 8) -> list[dict]:
-        """Web search through DuckDuckGo's HTML page (no API key)."""
+        """Web search: the Brave Search API when BRAVE_API_KEY is set, else DuckDuckGo's HTML page."""
+        key = os.getenv("BRAVE_API_KEY", "").strip()
+        if key:
+            return brave_search(query, key, max_results)
+
         def op():
             page, _ = self._goto(f"https://html.duckduckgo.com/html/?q={quote_plus(query)}")
             out = []
@@ -143,6 +183,9 @@ class PlaywrightBrowser:
                 if a:
                     out.append({"title": a.inner_text().strip(), "url": a.get_attribute("href"),
                                 "snippet": snip.inner_text().strip() if snip else ""})
+            if not out and _DDG_BLOCKED.search(page.content()):
+                raise SearchUnavailable("web search is blocked: DuckDuckGo answered with a bot check. "
+                                        "Set BRAVE_API_KEY to use the Brave Search API instead.")
             return out
         return self._run(op)
 
