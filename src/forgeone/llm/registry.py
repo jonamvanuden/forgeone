@@ -1,21 +1,31 @@
-"""Which models ForgeOne can use: Claude built in, everything else from models.yaml.
+"""Which models ForgeOne can use, where they run, and which model does which job.
 
-    # models.yaml, in the ForgeOne root (next to agents.yaml)
+Claude is built in. Everything else comes from models.yaml in the ForgeOne root:
+
     models:
-      qwen3-8b:                         # the name used everywhere in ForgeOne (variants, env, routing)
-        provider: runpod                # runpod | openai_compatible
-        endpoint_id: abc123xyz          # RunPod serverless endpoint id
-        model: Qwen/Qwen3-8B            # the model id the endpoint serves
-        context_window: 32768
-        max_output: 4096
-        price_in: 0.05                  # USD per million tokens (an estimate for GPU-second billing)
+      qwen3-8b:                         # the name used everywhere in ForgeOne
+        provider: runpod                # see llm/providers.py: anthropic | deepinfra | runpod | openai | openai_compatible
+        endpoint_id: abc123xyz
+        model: Qwen/Qwen3-8B            # the id the provider knows it by
+        price_in: 0.05                  # USD per million tokens
         price_out: 0.20
-        thinking: false                 # Qwen3: disable the <think> phase (faster, cleaner JSON)
-        structured: json_schema         # json_schema (vLLM guided decoding) | prompt
-        timeout_s: 300                  # serverless cold starts can take minutes
+      llama-70b:
+        provider: deepinfra
+        model: meta-llama/Llama-3.3-70B-Instruct
+        price_in: 0.23
+        price_out: 0.40
 
-The RunPod API key comes from RUNPOD_API_KEY (or api_key_env per model). Nothing secret
-goes in models.yaml.
+    routing:                            # which model does which job (all optional)
+      planner: claude-sonnet-5-5        # plans goals, milestones, tasks
+      judge: claude-haiku-5-5           # verify, edge_test, approve
+      cheap: llama-70b                  # tasks of difficulty 1..3
+      strong: claude-sonnet-5-5         # tasks of difficulty 4..5
+      types:                            # per task type; beats cheap/strong
+        write: deepinfra:Qwen/Qwen3-235B-A22B-Instruct-2507
+
+A model can also be named without an entry as `provider:model-id`, e.g.
+`deepinfra:meta-llama/Llama-3.3-70B-Instruct` (no price known, so register it to get costs).
+Keys come from the environment (.env), never from this file.
 """
 from __future__ import annotations
 
@@ -26,21 +36,22 @@ import yaml
 from pydantic import BaseModel
 
 from ..config import settings
+from .providers import Provider, providers
 
 
 class ModelInfo(BaseModel):
     name: str
-    provider: str = "anthropic"            # anthropic | runpod | openai_compatible
+    provider: str = "anthropic"            # a name from llm/providers.py or models.yaml providers:
     model: str | None = None               # id at the provider; default: name
     endpoint_id: str | None = None         # runpod
-    base_url: str | None = None            # openai_compatible (or to override runpod's)
+    base_url: str | None = None            # overrides the provider's
     api_key_env: str | None = None
     context_window: int = 200_000
     max_output: int = 8000
     price_in: float | None = None          # USD per million tokens; None: use llm/pricing.PRICES
     price_out: float | None = None
     thinking: bool = False
-    structured: str = "json_schema"
+    structured: str | None = None          # json_schema | json_object | prompt; None: the provider's
     timeout_s: float = 300
     max_retries: int = 3
 
@@ -49,18 +60,33 @@ class ModelInfo(BaseModel):
         return self.model or self.name
 
     @property
+    def prov(self) -> Provider:
+        from .providers import provider
+
+        return provider(self.provider)
+
+    @property
+    def adapter(self) -> str:
+        return self.prov.adapter
+
+    @property
+    def structured_mode(self) -> str:
+        return self.structured or self.prov.structured
+
+    @property
     def url(self) -> str:
-        if self.base_url:
-            return self.base_url.rstrip("/")
-        if self.provider == "runpod":
+        base = self.base_url or self.prov.base_url
+        if not base:
+            raise ValueError(f"model {self.name}: provider {self.provider} has no base_url; set base_url in models.yaml")
+        if "{endpoint_id}" in base:
             if not self.endpoint_id:
-                raise ValueError(f"model {self.name}: runpod needs endpoint_id in models.yaml")
-            return f"https://api.runpod.ai/v2/{self.endpoint_id}/openai/v1"
-        raise ValueError(f"model {self.name}: no base_url")
+                raise ValueError(f"model {self.name}: {self.provider} needs endpoint_id in models.yaml")
+            base = base.replace("{endpoint_id}", self.endpoint_id)
+        return base.rstrip("/")
 
     @property
     def key_env(self) -> str:
-        return self.api_key_env or ("RUNPOD_API_KEY" if self.provider == "runpod" else "OPENAI_API_KEY")
+        return self.api_key_env or self.prov.key_env or "OPENAI_API_KEY"
 
 
 CLAUDE = {
@@ -74,23 +100,41 @@ def models_file() -> Path:
     return settings().home / "models.yaml"
 
 
-@lru_cache(maxsize=1)
-def _load(path: str, mtime: float) -> dict[str, ModelInfo]:
-    raw = (yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}).get("models") or {}
-    return {name: ModelInfo(name=name, **(cfg or {})) for name, cfg in raw.items()}
+@lru_cache(maxsize=4)
+def _load(path: str, mtime: float) -> dict:
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+
+def _raw(path: Path | None = None) -> dict:
+    p = path or models_file()
+    return _load(str(p), p.stat().st_mtime) if p.exists() else {}
+
+
+def all_providers(path: Path | None = None) -> dict[str, Provider]:
+    return providers(_raw(path).get("providers"))
 
 
 def registry(path: Path | None = None) -> dict[str, ModelInfo]:
-    p = path or models_file()
-    extra = _load(str(p), p.stat().st_mtime) if p.exists() else {}
-    return {**CLAUDE, **extra}
+    raw = _raw(path).get("models") or {}
+    return {**CLAUDE, **{name: ModelInfo(name=name, **(cfg or {})) for name, cfg in raw.items()}}
+
+
+def routing(path: Path | None = None) -> dict:
+    """The `routing:` section: planner, judge, cheap, strong, types{task type: model}."""
+    r = _raw(path).get("routing") or {}
+    return {**r, "types": dict(r.get("types") or {})}
 
 
 def model_info(name: str) -> ModelInfo:
-    """Known model, or a sensible default: claude-* is Anthropic, anything else must be registered."""
+    """Registered model, `provider:model-id`, or a bare claude-* name."""
     reg = registry()
     if name in reg:
         return reg[name]
+    if ":" in name:
+        prov, _, mid = name.partition(":")
+        if prov in all_providers() and mid:
+            return ModelInfo(name=name, provider=prov, model=mid)
     if name.startswith("claude"):
         return ModelInfo(name=name)
-    raise KeyError(f"model {name!r} is not in {models_file()} (known: {', '.join(sorted(reg))})")
+    raise KeyError(f"model {name!r} is not in {models_file()} and is not provider:model "
+                   f"(known models: {', '.join(sorted(reg))}; providers: {', '.join(sorted(all_providers()))})")

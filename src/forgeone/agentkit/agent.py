@@ -17,6 +17,13 @@ from ..work.playbooks import MilestoneTemplate, Playbook, TaskTemplate, register
 from . import steps
 from .blueprint import AgentBlueprint, blueprint_checks
 
+def task_model(t) -> str:
+    """Pinned in the blueprint > models.yaml routing.types > cheap/strong by difficulty."""
+    from ..work.policy import cheap_model, strong_model, type_model
+
+    return t.model or type_model(t.type) or (strong_model() if t.difficulty >= 4 else cheap_model())
+
+
 EXPECTED = {"think": "the deliverable in markdown",
             "browse": "findings with an exact quote and the URL of every page they come from",
             "report": "the final markdown report, ending with a Sources list"}
@@ -47,16 +54,14 @@ class Agent:
 
     # ---- the plan of every command ---------------------------------------------
     def plan(self, goal: Goal) -> list[MilestoneTemplate]:
-        from ..config import settings
-
-        model = goal.playbook_args.get("model") or settings().agent_model
         bp = self.blueprint
+        forced = goal.playbook_args.get("model")
         return [MilestoneTemplate(
             title=m.title, description=m.description, done_when=list(m.done_when), approval="none",
             tasks=[TaskTemplate(
                 key=t.key, step=f"agentkit.{t.kind}", title=t.title, description=t.instructions, type=t.type,
                 criteria=list(t.criteria), stages=list(t.stages), depends_on=list(t.depends_on),
-                difficulty=t.difficulty, model=model, input="the command and the output of the tasks it depends on",
+                difficulty=t.difficulty, model=forced or task_model(t), input="the command and the output of the tasks it depends on",
                 expected_output=EXPECTED[t.kind],
                 est_steps=max(1, bp.max_steps // 2) if t.kind == "browse" else 1,
                 est_minutes=2.0 if t.kind == "browse" else 0.5)

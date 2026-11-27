@@ -1,24 +1,56 @@
-# Copy to models.yaml (next to agents.yaml) and fill in your endpoint id.
-# Claude models are built in and need no entry. No secrets here: the RunPod key comes from
-# the RUNPOD_API_KEY environment variable (.env), or from api_key_env per model.
+# Copy to models.yaml (next to agents.yaml). Claude models are built in and need no entry.
+# No secrets here: keys come from the environment (.env):
+#   ANTHROPIC_API_KEY, DEEPINFRA_API_KEY, RUNPOD_API_KEY, OPENAI_API_KEY (or api_key_env per model)
+#
+# Providers built in (forgeone models providers):
+#   anthropic   Claude
+#   deepinfra   https://api.deepinfra.com/v1/openai   open models, pay per token
+#   runpod      your own vLLM serverless endpoint (endpoint_id)
+#   openai      https://api.openai.com/v1
+#   openai_compatible   any other /chat/completions server (base_url per model)
+#
+# A model can be used without an entry as provider:model-id, e.g.
+#   deepinfra:meta-llama/Llama-3.3-70B-Instruct
+# Register it below to give it a short name and a price (costs and budgets need the price).
+
 models:
-  qwen3-8b:                         # the name you use everywhere: env vars, eval variants, CLI
-    provider: runpod                # runpod | openai_compatible
+  llama-70b:                        # the name you use everywhere: routing, env vars, CLI
+    provider: deepinfra
+    model: meta-llama/Llama-3.3-70B-Instruct   # the id on deepinfra.com
+    context_window: 131072
+    max_output: 8000
+    price_in: 0.23                  # USD per million tokens (check deepinfra.com/pricing)
+    price_out: 0.40
+    # structured: json_object       # deepinfra default; json_schema if the model supports it; prompt as last resort
+
+  qwen3-8b:
+    provider: runpod
     endpoint_id: YOUR_ENDPOINT_ID   # RunPod console > Serverless > your vLLM endpoint
     model: Qwen/Qwen3-8B            # must match MODEL_NAME on the endpoint
-    context_window: 32768           # budgets are capped at 60% of this
+    context_window: 32768
     max_output: 4096
-    price_in: 0.05                  # USD per million tokens, an estimate (RunPod bills GPU seconds)
+    price_in: 0.05
     price_out: 0.20
     thinking: false                 # Qwen3: skip the <think> phase (faster, cleaner JSON)
-    structured: json_schema         # json_schema (vLLM guided decoding) | prompt
     timeout_s: 300                  # a cold start can take minutes
     max_retries: 2
 
-  # Any other OpenAI-compatible server (vLLM, Ollama, a gateway):
-  # local-llama:
-  #   provider: openai_compatible
-  #   base_url: http://10.0.0.5:8000/v1
-  #   model: meta-llama/Llama-3.1-8B-Instruct
-  #   api_key_env: LOCAL_LLM_KEY
-  #   context_window: 16384
+# Which model does which job. Everything optional; missing entries fall back to
+# FORGEONE_MODEL / FORGEONE_AGENT_MODEL / FORGEONE_STRONG_MODEL / FORGEONE_JUDGE_MODEL.
+# Check the result with: forgeone models routes
+routing:
+  planner: claude-sonnet-5-5        # breaks goals into milestones and tasks
+  judge: claude-haiku-5-5           # verify, edge_test, approve
+  cheap: llama-70b                  # tasks of difficulty 1..3
+  strong: claude-sonnet-5-5         # tasks of difficulty 4..5
+  types:                            # per task type; beats cheap/strong
+    # research: llama-70b
+    # write: deepinfra:Qwen/Qwen3-235B-A22B-Instruct-2507
+
+# Add a provider of your own (any OpenAI-compatible API):
+# providers:
+#   together:
+#     adapter: openai_compat
+#     base_url: https://api.together.xyz/v1
+#     key_env: TOGETHER_API_KEY
+#     structured: json_object

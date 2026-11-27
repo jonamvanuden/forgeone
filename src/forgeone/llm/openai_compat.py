@@ -129,7 +129,7 @@ class OpenAICompatChat:
             body["tools"], body["tool_choice"] = self.tools, "auto"
         if response_format:
             body["response_format"] = response_format
-        if "qwen3" in self.info.provider_model.lower():
+        if self.info.prov.send_thinking_flag and "qwen3" in self.info.provider_model.lower():
             body["chat_template_kwargs"] = {"enable_thinking": bool(self.info.thinking)}
         return body
 
@@ -196,9 +196,13 @@ class _Structured:
 
     def invoke(self, prompt, config: dict | None = None):
         js = self.schema.model_json_schema()
-        if self.chat.info.structured == "json_schema":
+        mode = self.chat.info.structured_mode
+        if mode == "json_schema":
             ai = self.chat.invoke(prompt, config, response_format={
                 "type": "json_schema", "json_schema": {"name": self.schema.__name__, "schema": js}})
+        elif mode == "json_object":     # JSON mode: valid JSON guaranteed, the schema comes from the prompt
+            ai = self.chat.invoke(prompt, config, response_format={"type": "json_object"}, system_extra=(
+                "Answer with one JSON object that matches this JSON schema, and nothing else:\n" + json.dumps(js)))
         else:
             ai = self.chat.invoke(prompt, config, system_extra=(
                 "Answer with one JSON object that matches this JSON schema, and nothing else:\n" + json.dumps(js)))

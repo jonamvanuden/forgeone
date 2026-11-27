@@ -367,8 +367,24 @@ def _models(a):
 
     from .llm import chat_model
     from .llm.pricing import call_cost, usage_of
-    from .llm.registry import model_info, models_file, registry
+    from .llm.registry import all_providers, model_info, models_file, registry
+    from .work import policy
 
+    if a.action == "providers":
+        print(f"providers (built in + {models_file()}); use one as provider: in models.yaml or as provider:model-id")
+        for name, p in all_providers().items():
+            key = ("key set" if os.getenv(p.key_env or "") else f"{p.key_env} NOT SET") if p.key_env else ""
+            print(f"  {name:<18}{p.adapter:<15}{(p.base_url or 'base_url per model'):<52}{key}  {p.note}")
+        return
+    if a.action == "routes":
+        types = policy._routing()["types"]
+        print("which model does which job (models.yaml routing:, else env, else default):")
+        for role, m in [("planner", policy.planner_model()), ("judge", policy.judge_model()),
+                        ("cheap (difficulty 1-3)", policy.cheap_model()), ("strong (difficulty 4-5)", policy.strong_model())]:
+            print(f"  {role:<26}{m}")
+        for t, m in types.items():
+            print(f"  {'type ' + t:<26}{m}")
+        return
     if a.action == "list":
         print(f"models (built in + {models_file()}):")
         for name, m in registry().items():
@@ -503,8 +519,8 @@ def main(argv: list[str] | None = None) -> None:
     go.add_argument("--actions", action="store_true", help="show: list every action")
     go.set_defaults(fn=_goal)
 
-    mo = sub.add_parser("models", help="models: list, check NAME (e.g. a RunPod Qwen3 endpoint)")
-    mo.add_argument("action", choices=["list", "check"])
+    mo = sub.add_parser("models", help="models: list, providers, routes, check NAME (e.g. deepinfra:meta-llama/...)")
+    mo.add_argument("action", choices=["list", "providers", "routes", "check"])
     mo.add_argument("name", nargs="?")
     mo.set_defaults(fn=_models)
 

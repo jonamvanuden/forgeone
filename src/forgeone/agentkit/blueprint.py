@@ -48,6 +48,8 @@ class TaskBlueprint(BaseModel):
                                          description="Always execute and verify; add edge_test for the risky steps.")
     depends_on: list[str] = Field(default_factory=list, description="keys of EARLIER tasks whose output it needs")
     difficulty: int = Field(default=2, ge=1, le=5)
+    model: str | None = Field(default=None, description="Leave empty: models.yaml routing picks the model. "
+                                                        "Set only to pin this task to one model.")
 
     @field_validator("key")
     @classmethod

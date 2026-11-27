@@ -81,12 +81,19 @@ access: tasks are done by plain model calls. Approvals never continue the goal b
 Optional: `FORGEONE_STRONG_MODEL` (difficulty 4–5, default claude-sonnet-5-5), `FORGEONE_JUDGE_MODEL`
 (verify, edge test, approve; default the builder model).
 
-## Models (Claude and RunPod/Qwen3)
-Claude models are built in. Other models go in `models.yaml` (copy `models.example.yaml`); the key
-goes in `.env` as `RUNPOD_API_KEY`. `models.yaml` is not in git, so `git pull` never overwrites it.
+## Models and providers (Claude, DeepInfra, RunPod, any OpenAI-compatible API)
+Claude models are built in. Other models go in `models.yaml` (copy `models.example.yaml`), or are
+named on the fly as `provider:model-id` (e.g. `deepinfra:meta-llama/Llama-3.3-70B-Instruct`).
+Keys go in `.env`: `DEEPINFRA_API_KEY`, `RUNPOD_API_KEY`, ... `models.yaml` is not in git, so
+`git pull` never overwrites it. Its `routing:` section says which model plans, which one judges,
+which one runs easy and hard tasks, and which one runs a task type (e.g. all `write` tasks).
+A blueprint task can pin a model with `model:`. Order: `run --model` > pinned > routing.types >
+routing.cheap/strong > env vars.
 ```bash
+forgeone models providers                  # adapters, base URLs, which keys are set
+forgeone models routes                     # which model does which job right now
 forgeone models list                       # every model: provider, context window, price
-forgeone models check qwen3-8b             # 3 test calls: plain answer, tool call, structured JSON
+forgeone models check llama-70b            # 3 test calls: plain answer, tool call, structured JSON
 FORGEONE_MODEL=qwen3-8b FORGEONE_JUDGE_MODEL=qwen3-8b forgeone goal new "..." --run   # one goal on Qwen
 ```
 RunPod endpoint (Serverless > New endpoint > vLLM): `MODEL_NAME=Qwen/Qwen3-8B`,

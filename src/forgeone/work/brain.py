@@ -4,14 +4,12 @@ version produced it."""
 from __future__ import annotations
 
 import hashlib
-import os
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import settings
 from ..llm.pricing import call_cost, usage_of
 
 PROMPTS = Path(__file__).parent / "prompts"
@@ -56,8 +54,10 @@ class Brain:
 
             llm_factory = lambda m: chat_model(m)  # noqa: E731
         self.llm_factory = llm_factory
-        self.planner_model = planner_model or settings().builder_model
-        self.judge_model = judge_model or os.getenv("FORGEONE_JUDGE_MODEL", settings().builder_model)
+        from .policy import judge_model as routed_judge, planner_model as routed_planner
+
+        self.planner_model = planner_model or routed_planner()
+        self.judge_model = judge_model or routed_judge()
         self.callbacks = callbacks
 
     def _config(self) -> dict:

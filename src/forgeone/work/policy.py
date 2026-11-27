@@ -24,12 +24,36 @@ TOOL_TYPES = {"research", "read", "extract"}   # need the agent's browser tools
 STEP_TOKENS_IN, STEP_TOKENS_OUT = 6000, 600
 
 
+def _routing() -> dict:
+    from ..llm.registry import routing
+
+    try:
+        return routing()
+    except Exception:  # noqa: BLE001  (a broken models.yaml falls back to the env defaults)
+        return {"types": {}}
+
+
 def cheap_model() -> str:
-    return settings().agent_model
+    """models.yaml routing.cheap, else FORGEONE_AGENT_MODEL."""
+    return _routing().get("cheap") or settings().agent_model
 
 
 def strong_model() -> str:
-    return os.getenv("FORGEONE_STRONG_MODEL", "claude-sonnet-5-5")
+    """models.yaml routing.strong, else FORGEONE_STRONG_MODEL."""
+    return _routing().get("strong") or os.getenv("FORGEONE_STRONG_MODEL", "claude-sonnet-5-5")
+
+
+def planner_model() -> str:
+    return _routing().get("planner") or settings().builder_model
+
+
+def judge_model() -> str:
+    return _routing().get("judge") or os.getenv("FORGEONE_JUDGE_MODEL", settings().builder_model)
+
+
+def type_model(task_type: str | None) -> str | None:
+    """A model routed to this task type in models.yaml (routing.types), if any."""
+    return _routing()["types"].get(task_type) if task_type else None
 
 
 def stages_for(risk: str, reversible: bool = True) -> list[Stage]:
@@ -75,6 +99,8 @@ def route(task: Task, goal: Goal, has_agent: bool) -> tuple[str, str, str]:
         executor, why = "llm", f"{task.type} would need web tools but the goal has no agent: model answers from its own knowledge"
     else:
         executor, why = "llm", f"{task.type} needs no tools: one model call"
+    if (m := type_model(task.type)):
+        return executor, m, f"{why}; models.yaml routes {task.type} tasks to {m}"
     if task.difficulty >= 4:
         return executor, strong_model(), f"{why}; difficulty {task.difficulty} >= 4: stronger model"
     return executor, cheap_model(), f"{why}; difficulty {task.difficulty} <= 3: cheapest model"

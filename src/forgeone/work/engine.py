@@ -28,7 +28,7 @@ from .planner import bullets, milestones_from, numbered, task_types_text, tasks_
 from .playbooks import StepContext, StepFailed
 from .playbooks import load as load_playbook
 from .policy import (MAX_DEPTH, MAX_REPLANS, SPLIT_AT_DIFFICULTY, actual_difficulty, approver_for, as_container,
-                     cheap_model, estimate_cost, is_gate, milestone_approver)
+                     cheap_model, estimate_cost, is_gate, milestone_approver, type_model)
 from .schemas import Approval, EdgeReport, MilestonePlan, TaskPlan, Verdict
 from .store import WorkStore, default_store
 
@@ -346,7 +346,7 @@ class Engine:
                           description=mt.description, done_when=mt.done_when, approval=mt.approval)
             new_ms.append(m)
             for j, tt in enumerate(mt.tasks, 1):
-                model = tt.model or (cheap_model() if tt.step is None else None)
+                model = tt.model or ((type_model(tt.type) or cheap_model()) if tt.step is None else None)
                 t = Task(goal_id=g.id, milestone_id=m.id, plan_version=g.plan_version, seq=j, code=f"{seq}.{j}",
                          title=tt.title, description=tt.description, type=tt.type, difficulty=tt.difficulty,
                          risk=tt.risk, reversible=tt.reversible, acceptance_criteria=tt.criteria,
