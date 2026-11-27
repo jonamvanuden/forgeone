@@ -62,6 +62,7 @@ const pct = (a, b) => (n(b) ? `${Math.round((n(a) / n(b)) * 100)}%` : "–");
 
 async function api(path) {
   const res = await fetch(path, { headers: { Accept: "application/json" } });
+  if (res.status === 401) { location.href = "/login?next=" + encodeURIComponent("/" + location.hash); throw new Error("Sign in first."); }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
   return body;

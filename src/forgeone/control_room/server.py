@@ -21,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 
 from ..config import settings
 from ..llm.pricing import PRICES, call_cost, price
-from . import actions, db, work_api
+from . import actions, auth, db, work_api
 
 STATIC = Path(__file__).parent / "static"
 DOCS = settings().docs_dir   # project documents (HTML + PDF), served at /docs
@@ -402,6 +402,8 @@ routes = [
     Route("/api/actions/goals/{goal_id}/run", _act(lambda r, b: actions.run_goal(r.path_params["goal_id"])), methods=["POST"]),
     Mount("/static", StaticFiles(directory=STATIC), name="static"),
     Mount("/docs", StaticFiles(directory=DOCS, check_dir=False), name="docs"),
+    Route("/login", auth.login, methods=["GET", "POST"]),
+    Route("/logout", auth.logout, methods=["GET", "POST"]),
     Route("/", index),
 ]
 
@@ -419,4 +421,5 @@ async def security_headers(request, call_next):
 app = Starlette(routes=routes, exception_handlers={Exception: on_error, HTTPException: on_error})
 from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 
-app.add_middleware(BaseHTTPMiddleware, dispatch=security_headers)
+app.add_middleware(BaseHTTPMiddleware, dispatch=auth.require_login)
+app.add_middleware(BaseHTTPMiddleware, dispatch=security_headers)   # outermost: also covers the login page
