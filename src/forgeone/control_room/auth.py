@@ -27,6 +27,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 COOKIE = "fo_session"
 SESSION_SECONDS = 12 * 3600
 OPEN_PATHS = {"/login", "/logout"}
+OPEN_PREFIXES = ("/static/",)   # CSS, JS and icons only: no data, needed to draw any page
 MAX_FAILURES = 5            # per client address ...
 LOCKOUT_SECONDS = 10 * 60   # ... within this window
 
@@ -181,7 +182,7 @@ async def logout(request: Request) -> Response:
 async def require_login(request: Request, call_next):
     """Middleware: everything except the login pages needs a valid session."""
     path = request.url.path
-    if path in OPEN_PATHS or session_user(request):
+    if path in OPEN_PATHS or path.startswith(OPEN_PREFIXES) or session_user(request):
         return await call_next(request)
     if path.startswith("/api/"):
         return JSONResponse({"error": "Sign in first.", "login": "/login"}, status_code=401,

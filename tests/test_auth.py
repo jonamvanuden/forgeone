@@ -17,6 +17,7 @@ def _app() -> Starlette:
     app = Starlette(routes=[
         Route("/", lambda r: PlainTextResponse("dashboard")),
         Route("/api/home", lambda r: JSONResponse({"ok": True})),
+        Route("/static/app.css", lambda r: PlainTextResponse("body{}")),
         Route("/login", auth.login, methods=["GET", "POST"]),
         Route("/logout", auth.logout, methods=["GET", "POST"]),
     ])
@@ -91,3 +92,9 @@ def test_lockout_after_failures(configured):
         c.post("/login", data={"username": "jonam", "password": "wrong"})
     r = c.post("/login", data={"username": "jonam", "password": PASSWORD}, follow_redirects=False)
     assert r.status_code == 429
+
+
+def test_static_files_open(configured):
+    c = TestClient(_app())
+    assert c.get("/static/app.css").text == "body{}"
+    assert c.get("/staticx", follow_redirects=False).status_code == 303
