@@ -414,6 +414,9 @@ class Engine:
         self.policy = resolve(g.context_policy)
         self.tasks_run, self.max_tasks = 0, max_tasks
         with self._session("goal.run", g):
+            from .recovery import recover_interrupted
+
+            self.store.save(*recover_interrupted(tree))
             g.status, g.note = "running", None
             g.started_at = g.started_at or now()
             self.store.save(g)

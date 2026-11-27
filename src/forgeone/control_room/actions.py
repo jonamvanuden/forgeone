@@ -1,4 +1,5 @@
-"""Starting work from the Control Room: a new goal, a build, or continuing a goal.
+"""Starting and steering work from the Control Room: a new goal or build, continue, retry a task
+from where it failed, approve or reject, raise the budget, replan, cancel.
 
 The dashboard is public and read-only. These are its only write actions, and each needs the
 action password: FORGEONE_ACTION_TOKEN in .env (at least 16 characters). Without it the buttons
@@ -274,23 +275,128 @@ def new_goal(body: dict) -> dict:
     return _start("goal", args, gid, title, {"budget": budget, "autonomy": autonomy, "context": context})
 
 
-def run_goal(goal_id: str) -> dict:
+def _goal_id(goal_id: str) -> str:
     from ..work.approvals import normalize_id
 
     gid = normalize_id(goal_id or "")
     if not re.fullmatch(r"G-[0-9a-f]{6}", gid):
         raise ActionError(404, "Goal not found")
-    if _running_for(gid):
-        raise ActionError(409, "This goal is already running.")
+    return gid
+
+
+def _store():
     from ..work import PgStore
 
+    return PgStore()
+
+
+def _load(gid: str):
     try:
-        g = PgStore().load(gid).goal
+        return _store().load(gid)
     except Exception:  # noqa: BLE001
         raise ActionError(404, "Goal not found") from None
-    if g.status in ("done", "cancelled", "failed", "running"):
-        hint = " Replan it first: forgeone goal replan." if g.status == "failed" else ""
+
+
+def _idle(gid: str):
+    """The goal, if nothing is working on it. A goal that says 'running' without a job and
+    without any activity for 15 minutes was interrupted (restart, crash) and counts as idle."""
+    from ..work.recovery import interrupted
+
+    if _running_for(gid):
+        raise ActionError(409, "This goal is running right now. Wait until the job finishes.")
+    tree = _load(gid)
+    if tree.goal.status == "running" and not interrupted(tree):
+        raise ActionError(409, "This goal is running (maybe from the command line). Wait until it stops.")
+    return tree.goal
+
+
+def run_goal(goal_id: str) -> dict:
+    gid = _goal_id(goal_id)
+    g = _idle(gid)
+    if g.status in ("done", "cancelled", "failed"):
+        hint = " Retry the failed task or replan the goal first." if g.status == "failed" else ""
         raise ActionError(409, f"This goal is {g.status}.{hint}")
     if g.status == "paused" and g.budget_usd is not None and g.cost_usd >= g.budget_usd:
-        raise ActionError(409, "The budget is used up: raise it first with forgeone goal budget.")
+        raise ActionError(409, "The budget is used up: raise it first.")
     return _start("run", ["goal", "run", gid], gid, g.title)
+
+
+def retry_task(goal_id: str, task: str, body: dict) -> dict:
+    """Reset a failed task (and what it blocked), then continue the goal from there."""
+    from ..work.recovery import CannotRetry, retry_task as reset
+
+    gid = _goal_id(goal_id)
+    g = _idle(gid)
+    note = _text(body.get("note"), "Note", 2000) or None
+    try:
+        msg = reset(_store(), gid, _text(task, "Task", 40, required=True), note=note, who="you (dashboard)")
+    except CannotRetry as e:
+        raise ActionError(409, str(e)) from None
+    if body.get("run", True) and not (g.budget_usd is not None and g.cost_usd >= g.budget_usd):
+        return {"message": msg, "job": _start("run", ["goal", "run", gid], gid, g.title)}
+    return {"message": msg}
+
+
+def decide(record_id: str, body: dict) -> dict:
+    """Approve or reject a task, a go-ahead or a milestone; then continue the goal."""
+    from ..work.approvals import NotWaiting, decide as do_decide, normalize_id
+
+    rid = normalize_id(record_id or "")
+    if not re.fullmatch(r"[TMGA]-[0-9a-f]{6}", rid):
+        raise ActionError(404, "Not found")
+    approve = bool(body.get("approve"))
+    note = _text(body.get("note"), "Note", 2000) or None
+    if not approve and not note:
+        raise ActionError(400, "Say what must change: a rejection needs a note.")
+    found = _store().find(rid)
+    if not found:
+        raise ActionError(404, "Not found")
+    gid = found[1]
+    g = _idle(gid)
+    try:
+        msg = do_decide(_store(), rid, approve, note=note, who="you (dashboard)")
+    except NotWaiting as e:
+        raise ActionError(409, str(e)) from None
+    out = {"message": msg}
+    if body.get("run", True) and g.status not in ("cancelled", "done"):
+        try:
+            out["job"] = run_goal(gid)
+        except ActionError as e:          # e.g. a rejected milestone made the goal fail: show why
+            out["message"] += f" {e.message}"
+    return out
+
+
+def set_budget(goal_id: str, body: dict) -> dict:
+    gid = _goal_id(goal_id)
+    _idle(gid)
+    usd = _budget(body.get("usd"))
+    tree = _load(gid)
+    g = tree.goal
+    if usd <= g.cost_usd:
+        raise ActionError(400, f"{g.id} already spent ${g.cost_usd:.2f}: the budget must be higher.")
+    g.budget_usd = usd
+    if g.status == "paused":
+        g.note = f"budget raised to ${usd:.2f}: continue to run it"
+    _store().save(g)
+    return {"message": f"Budget set to ${usd:.2f}."}
+
+
+def cancel(goal_id: str) -> dict:
+    gid = _goal_id(goal_id)
+    g = _idle(gid)
+    if g.status in ("done", "cancelled"):
+        raise ActionError(409, f"This goal is already {g.status}.")
+    g.status, g.note = "cancelled", "cancelled by you (dashboard)"
+    _store().save(g)
+    return {"message": "Goal cancelled."}
+
+
+def replan(goal_id: str, body: dict) -> dict:
+    gid = _goal_id(goal_id)
+    g = _idle(gid)
+    if g.playbook:
+        raise ActionError(409, f"This goal follows the fixed plan of playbook {g.playbook}: retry the failed task instead.")
+    if g.status in ("done", "cancelled"):
+        raise ActionError(409, f"This goal is {g.status}.")
+    reason = _text(body.get("reason"), "Reason", 2000, required=True)
+    return {"job": _start("replan", ["goal", "replan", gid, "--reason", reason], gid, f"Replan: {g.title}")}

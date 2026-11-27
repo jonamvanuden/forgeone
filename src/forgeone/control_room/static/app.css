@@ -732,3 +732,13 @@ details > summary { cursor: pointer; }
 .table.list td .why { display: block; }
 .table.list .btn { padding: 6px 12px; font-size: 12.5px; }
 .hero .ms-code { font: 600 0.8em var(--mono); color: var(--muted); margin-right: 4px; }
+
+/* steering a goal: retry, replan, budget, cancel, approve */
+.ctls { display: grid; gap: 18px; }
+.ctl .muted { font-size: 12.5px; margin-top: 2px; }
+.ctl .act-bar { margin-top: 8px; }
+.ctl-more summary { cursor: pointer; color: var(--muted, #6b6880); font-size: 13px; }
+.act-bar .act-input { width: 280px; }
+.act-bar .btn:disabled { opacity: .6; cursor: wait; }
+.notice .act-bar, .ask-do .act-bar { margin-top: 10px; }
+@media (max-width: 640px) { .act-bar .act-input { width: 100%; } }

@@ -557,12 +557,12 @@ function askList(inbox, attention) {
       <div class="ask-what"><span class="ask-kind">${w.kind === "gate" ? `Go-ahead for task ${esc(w.code)}` : w.kind === "task" ? `Approve task ${esc(w.code)}` : `Approve milestone ${esc(w.code)}`}</span>
         <a href="${w.kind === "milestone" ? `#/g/${esc(w.goal_id)}` : `#/t/${esc(w.id)}`}"><b>${esc(w.title)}</b></a>
         <div class="muted">${esc(w.goal)}, waiting ${esc(ago(w.since))}${w.kind === "gate" ? ". Nothing has run yet: it cannot be undone" : w.risk === "high" ? ", high risk" : ""}</div></div>
-      <div class="ask-do">${cmd(`forgeone approve ${w.id}`)}${cmd(`forgeone reject ${w.id} --note "..."`)}</div></li>`),
+      <div class="ask-do">${decideBar(w.id) || cmd(`forgeone approve ${w.id}`) + cmd(`forgeone reject ${w.id} --note "..."`)}</div></li>`),
     ...attention.map((a) => `<li class="ask">
       <div class="ask-what"><span class="ask-kind ${a.kind === "failed" ? "bad" : ""}">Goal ${a.kind === "failed" ? "failed" : "paused"}</span>
         <a href="#/g/${esc(a.goal_id)}"><b>${esc(a.goal)}</b></a>
         <div class="muted">${esc(a.note || "")}</div></div>
-      <div class="ask-do">${a.kind === "failed" ? cmd(`forgeone goal replan ${a.goal_id} --reason "..."`)
+      <div class="ask-do">${actionsOn ? `<a class="btn" href="#/g/${esc(a.goal_id)}">Open the goal to ${a.kind === "failed" ? "retry or replan" : "continue"}</a>` : a.kind === "failed" ? cmd(`forgeone goal replan ${a.goal_id} --reason "..."`)
         : /budget/.test(a.note || "") ? cmd(`forgeone goal budget ${a.goal_id} 1.00`) + cmd(`forgeone goal run ${a.goal_id}`)
         : cmd(`forgeone goal run ${a.goal_id}`)}</div></li>`),
   ];
@@ -597,7 +597,7 @@ const notMigrated = (title) => `<div class="page-head"><div><h1>${esc(title)}</h
   <div class="alert"><b>The database needs a migration.</b> Run this on the server: ${cmd("forgeone db migrate")}</div>`;
 
 async function viewWork() {
-  const [w, acts] = await Promise.all([api("/api/work"), api("/api/actions").catch(() => null)]);
+  const [w, acts] = await Promise.all([api("/api/work"), loadActs()]);
   const data = JSON.stringify([w, acts]);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
@@ -630,8 +630,8 @@ async function viewWork() {
 }
 
 async function viewInbox() {
-  const w = await api("/api/work");
-  const data = JSON.stringify([w.inbox, w.attention, w.migrated]);
+  const [w, acts] = await Promise.all([api("/api/work"), loadActs()]);
+  const data = JSON.stringify([w.inbox, w.attention, w.migrated, acts?.enabled, !!getToken()]);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
   setCrumbs([{ label: "Home", href: "#/" }, { label: "Needs you" }]);
@@ -685,7 +685,7 @@ function milestoneHTML(m, current) {
 }
 
 async function viewWorkGoal(id) {
-  const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), api("/api/actions").catch(() => null)]);
+  const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), loadActs()]);
   const job = acts?.jobs.find((j) => j.goal_id === id && j.state === "running");
   const data = JSON.stringify([d, acts?.enabled, job?.id, !!getToken()]);
   if (data === state.lastJSON) return false;
@@ -708,7 +708,8 @@ async function viewWorkGoal(id) {
         <div class="mono">${esc(g.id)}</div></div>
         <div>${status(g.status)}</div></div>
     </section>
-    ${runButton(g, acts, job)}
+    ${runButton(g, acts && { ...acts, interrupted: d.interrupted }, job)}
+    ${goalControls(d, job)}
     ${g.note && g.status !== "done" ? `<div class="notice ${g.status === "failed" ? "bad" : ""}"><b>${esc(STATUS_TEXT[g.status] || g.status)}.</b> ${esc(g.note)}</div>` : ""}
     ${panel("Milestones", "click a milestone to see its tasks", `<div class="scroll-x"><table class="table tasks list">
       <thead><tr><th>#</th><th>Milestone</th><th>Status</th><th class="r">Tasks</th><th class="r hide-sm">Cost</th></tr></thead>
@@ -751,7 +752,7 @@ async function viewMilestone(goalId, msId) {
 }
 
 async function viewWorkGoalFull(id) {
-  const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), api("/api/actions").catch(() => null)]);
+  const [d, acts] = await Promise.all([api(`/api/work/goals/${encodeURIComponent(id)}`), loadActs()]);
   const job = acts?.jobs.find((j) => j.goal_id === id && j.state === "running");
   const data = JSON.stringify([d, acts?.enabled, job?.id, !!getToken()]);
   if (data === state.lastJSON) return false;
@@ -779,7 +780,8 @@ async function viewWorkGoalFull(id) {
         <div>${status(g.status)}</div></div>
       ${track(d.milestones.map((m) => ({ ...m, ...m.progress })), { big: true })}
     </section>
-    ${runButton(g, acts, job)}
+    ${runButton(g, acts && { ...acts, interrupted: d.interrupted }, job)}
+    ${goalControls(d, job)}
     ${g.status === "waiting" ? "" : g.note && g.status !== "done" ? `<div class="notice ${g.status === "failed" ? "bad" : ""}"><b>${esc(STATUS_TEXT[g.status] || g.status)}.</b> ${esc(g.note)}${step ? `<div style="margin-top:8px">${cmd(step)}</div>` : ""}</div>` : (step ? `<div class="notice">Next step: ${cmd(step)}</div>` : "")}
     ${d.waiting.length ? panel("Waiting for you", "", `<div class="panel-body flush">${askList(d.waiting, [])}</div>`) : ""}
     <div class="grid g-kpi">
@@ -847,8 +849,9 @@ function actionHTML(a) {
 }
 
 async function viewTask(id) {
-  const d = await api(`/api/work/tasks/${encodeURIComponent(id)}`);
-  const data = JSON.stringify(d);
+  const [d, acts] = await Promise.all([api(`/api/work/tasks/${encodeURIComponent(id)}`), loadActs()]);
+  const job = acts?.jobs.find((j) => j.goal_id === d.goal.id && j.state === "running");
+  const data = JSON.stringify([d, acts?.enabled, job?.id, !!getToken()]);
   if (data === state.lastJSON) return false;
   state.lastJSON = data;
   const t = d.task, g = d.goal, m = d.milestone;
@@ -871,8 +874,9 @@ async function viewTask(id) {
         <div>${status(t.status)}</div></div>
       ${container ? "" : `<div class="hero-stages">${stagePills(d.stages, false)}<span>${d.stages.map((s) => `${STAGE[s.stage][1]}: ${STAGE_STATE[s.state]}`).join(", ")}</span></div>`}
     </section>
-    ${d.waiting ? `<div class="notice"><b>${d.waiting.input?.gate ? "Waiting for your go-ahead" : "Waiting for your approval"}</b> since ${esc(ago(d.waiting.started_at))}. ${d.waiting.input?.gate ? "Nothing has run yet, and what it does cannot be undone. Check what it will do and what it builds on, then:" : "Check the output below, then:"}<div class="cmds">${cmd(`forgeone approve ${t.id}`)}${cmd(`forgeone reject ${t.id} --note "what must change"`)}</div></div>` : ""}
-    ${["failed", "blocked"].includes(t.status) ? `<div class="notice bad"><b>${esc(STATUS_TEXT[t.status])}: ${esc(t.failure_reason || "")}.</b> ${esc(t.failure_detail || "")}</div>` : ""}
+    ${d.waiting ? `<div class="notice"><b>${d.waiting.input?.gate ? "Waiting for your go-ahead" : "Waiting for your approval"}</b> since ${esc(ago(d.waiting.started_at))}. ${d.waiting.input?.gate ? "Nothing has run yet, and what it does cannot be undone. Check what it will do and what it builds on, then:" : "Check the output below, then:"}${job ? "" : decideBar(t.id) || `<div class="cmds">${cmd(`forgeone approve ${t.id}`)}${cmd(`forgeone reject ${t.id} --note "what must change"`)}</div>`}</div>` : ""}
+    ${["failed", "blocked"].includes(t.status) ? `<div class="notice bad"><b>${esc(STATUS_TEXT[t.status])}: ${esc(t.failure_reason || "")}.</b> ${esc(t.failure_detail || "")}
+      ${job ? "" : retryBar(g.id, t) || `<div class="cmds">${cmd(`forgeone goal retry ${g.id} ${t.code} --note "..." --run`)}</div>`}</div>` : ""}
     <div class="grid g-kpi">
       ${kpi("Attempts", container ? "–" : `${fmtInt(t.attempts)}<small>/${fmtInt(t.max_attempts)}</small>`, container ? "see subtasks" : "allowed by policy")}
       ${kpi("Cost", esc(fmtUSD(t.cost_usd)), t.est_cost_usd != null ? `estimated ${esc(fmtUSD(t.est_cost_usd))}` : "")}
@@ -1389,13 +1393,80 @@ async function viewJob(id) {
   return true;
 }
 
+/* ---------------- steering a goal from the dashboard ---------------- */
+let actionsOn = false;
+async function loadActs() {
+  const a = await api("/api/actions").catch(() => null);
+  actionsOn = !!a?.enabled;
+  return a;
+}
+
+// One bar of buttons that post to an action; an optional text or number field goes along as `field`.
+function actBar({ field, placeholder, type = "text", buttons }) {
+  if (!actionsOn) return "";
+  return `<div class="run-bar act-bar">${getToken() ? "" : `<input type="password" class="act-token" placeholder="Action password" autocomplete="current-password" aria-label="Action password">`}
+    ${field ? `<input class="act-input" data-field="${esc(field)}" type="${type}" ${type === "number" ? 'step="0.5" min="0"' : ""} placeholder="${esc(placeholder || "")}" aria-label="${esc(placeholder || field)}">` : ""}
+    ${buttons.map((b) => `<button class="btn ${b.primary ? "primary" : ""}" type="button" data-act="${esc(b.path)}" data-body='${esc(JSON.stringify(b.body || {}))}'${b.needs ? " data-needs" : ""}${b.confirm ? ` data-confirm="${esc(b.confirm)}"` : ""}>${esc(b.label)}</button>`).join("")}
+    <span class="form-msg" role="status" aria-live="polite"></span></div>`;
+}
+
+const decideBar = (id) => actBar({ field: "note", placeholder: "Note (required to reject)", buttons: [
+  { label: "Approve and continue", path: `/api/actions/decide/${id}`, body: { approve: true }, primary: true },
+  { label: "Reject", path: `/api/actions/decide/${id}`, body: { approve: false }, needs: true }] });
+
+const retryBar = (gid, t) => actBar({ field: "note", placeholder: "Hint for the next attempt (optional)", buttons: [
+  { label: `Retry ${t.code} and continue`, path: `/api/actions/goals/${gid}/retry/${t.id}`, primary: true }] });
+
+function goalControls(d, job) {
+  const g = d.goal;
+  if (!actionsOn || job || ["done", "cancelled"].includes(g.status) || (g.status === "running" && !d.interrupted)) return "";
+  const stuck = d.milestones.flatMap((m) => m.tasks || []).filter((t) => t.status === "failed" && !t.container);
+  const parts = [];
+  if (g.status === "failed" || stuck.length) {
+    const t = stuck[0];
+    if (t) parts.push(`<div class="ctl"><b>Pick up where it stopped</b><div class="muted">${esc(t.code)} ${esc(t.title)} failed. Everything before it stays done.</div>${retryBar(g.id, t)}</div>`);
+    if (!g.playbook) parts.push(`<div class="ctl"><b>Or plan the rest again</b><div class="muted">Finished milestones are kept; the rest is planned anew.</div>${actBar({ field: "reason", placeholder: "Why? e.g. the source does not exist", buttons: [
+      { label: "Replan", path: `/api/actions/goals/${g.id}/replan`, needs: true }] })}</div>`);
+  }
+  const broke = g.budget_usd != null && n(g.cost_usd) >= n(g.budget_usd);
+  parts.push(`<div class="ctl"><b>Budget</b><div class="muted">Spent ${esc(budgetText(g))}${broke ? ": used up, raise it to continue" : ""}.</div>${actBar({ field: "usd", type: "number", placeholder: "New budget in USD", buttons: [
+    { label: "Set budget", path: `/api/actions/goals/${g.id}/budget`, needs: true }] })}</div>`);
+  parts.push(`<details class="ctl-more"><summary>Cancel this goal</summary>${actBar({ buttons: [
+    { label: "Cancel goal", path: `/api/actions/goals/${g.id}/cancel`, confirm: "Cancel this goal? It will not run again." }] })}</details>`);
+  return panel("Steer this goal", "", `<div class="panel-body ctls">${parts.join("")}</div>`);
+}
+
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const bar = b.closest(".act-bar"), msg = bar.querySelector(".form-msg");
+  const tokIn = bar.querySelector(".act-token"), field = bar.querySelector(".act-input");
+  const token = tokIn ? tokIn.value : getToken();
+  const bad = (text, el) => { msg.className = "form-msg bad"; msg.textContent = text; el?.focus(); };
+  if (!token) return bad("Enter the action password.", tokIn);
+  const body = JSON.parse(b.dataset.body || "{}");
+  if (field && field.value.trim()) body[field.dataset.field] = field.type === "number" ? Number(field.value) : field.value.trim();
+  if (b.hasAttribute("data-needs") && !(field && field.value.trim())) return bad(`Fill in: ${field?.placeholder || "the field"}.`, field);
+  if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
+  bar.querySelectorAll("button").forEach((x) => (x.disabled = true));
+  msg.className = "form-msg"; msg.textContent = "Working…";
+  try {
+    const out = await post(b.dataset.act, body, token);
+    if (tokIn) setToken(token);
+    const job = out.job?.id ? out.job : out.id ? out : null;
+    if (job) { location.hash = `#/job/${job.id}`; return; }
+    msg.textContent = out.message || "Done.";
+    setTimeout(() => { state.lastJSON = ""; render({ quiet: true }); }, 900);
+  } catch (err) { bad(err.message); bar.querySelectorAll("button").forEach((x) => (x.disabled = false)); }
+});
+
 function runButton(g, a, job) {
   if (job) return `<div class="notice run-now"><b>Running now.</b> Started ${esc(fmtDate(job.started_at))}. <a href="#/job/${esc(job.id)}">See the output</a></div>`;
-  if (!["planned", "paused", "waiting"].includes(g.status)) return "";
+  if (!["planned", "paused", "waiting"].includes(g.status) && !(g.status === "running" && a?.interrupted)) return "";
   if (g.status === "paused" && g.budget_usd != null && n(g.cost_usd) >= n(g.budget_usd)) return "";
   if (!a?.enabled) return "";
   return `<div class="run-bar">${getToken() ? "" : `<input type="password" id="run-token" placeholder="Action password" autocomplete="current-password" aria-label="Action password">`}
-    <button class="btn primary" type="button" data-run-goal="${esc(g.id)}">${g.status === "planned" ? "Start working" : "Continue"}</button><span class="form-msg" role="status" aria-live="polite"></span></div>`;
+    <button class="btn primary" type="button" data-run-goal="${esc(g.id)}">${g.status === "planned" ? "Start working" : g.status === "running" ? "Continue (the last run was interrupted)" : "Continue"}</button><span class="form-msg" role="status" aria-live="polite"></span></div>`;
 }
 
 /* ---------------- router ---------------- */

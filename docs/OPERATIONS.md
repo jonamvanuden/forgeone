@@ -67,6 +67,7 @@ forgeone goal show G-xxxxxx [--actions]    # milestones, tasks, stages (E V T A)
 forgeone goal run G-xxxxxx [--max-tasks 3] # work until done, a human approval, the budget or the limit
 forgeone approve T-xxxxxx [--note "..."]   # a task or milestone waiting for you (or the goal id if one waits)
 forgeone reject T-xxxxxx --note "use the 2015 guideline"   # runs again with your note as feedback
+forgeone goal retry G-xxxxxx 2.3 --note "use the official site" --run   # retry a failed task, keep what is done
 forgeone goal replan G-xxxxxx --reason "M3 was the wrong approach"
 forgeone goal budget G-xxxxxx 2.50         # raise the budget of a paused goal, then goal run again
 forgeone goal cancel G-xxxxxx

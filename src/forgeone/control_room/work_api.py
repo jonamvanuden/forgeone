@@ -86,6 +86,8 @@ def api_work(request: Request):
 
 
 def api_work_goal(request: Request):
+    from ..work.recovery import interrupted
+
     try:
         tree = _store().load(request.path_params["goal_id"])
     except NotFound:
@@ -111,6 +113,7 @@ def api_work_goal(request: Request):
     closed = [t for t in leaves if t.status in ("done", "failed")]
     return {
         "goal": g.model_dump(), "progress": progress(tree), "milestones": milestones,
+        "interrupted": interrupted(tree),
         "superseded": [{"seq": m.seq, "title": m.title, "plan_version": m.plan_version, "note": m.note} for m in old],
         "plans": [{"version": a.input.get("plan_version"), "reason": a.input.get("reason"), "reasoning": a.reason,
                    "at": a.started_at, "cost_usd": a.cost_usd} for a in plans],

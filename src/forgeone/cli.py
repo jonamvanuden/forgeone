@@ -296,15 +296,28 @@ def _goal(a):
         if not a.reason:
             raise SystemExit("forgeone: say why: --reason \"...\"")
         _print_tree(engine.plan(gid, reason=a.reason))
+    elif a.action == "retry":
+        from .work.recovery import CannotRetry, retry_task
+
+        if not a.arg:
+            raise SystemExit("forgeone: which task? forgeone goal retry G-xxxxxx 2.3 [--note \"...\"] [--run]")
+        try:
+            print(retry_task(store, gid, a.arg, note=a.note))
+        except CannotRetry as e:
+            raise SystemExit(f"forgeone: {e}") from None
+        if a.run:
+            _print_tree(engine.run(gid, max_tasks=a.max_tasks))
     elif a.action in ("budget", "cancel"):
         tree = store.load(gid)
         g = tree.goal
         if a.action == "budget":
-            if a.usd is None:
-                raise SystemExit("forgeone: forgeone goal budget G-xxxxxx 2.50")
-            g.budget_usd = a.usd
+            try:
+                usd = float(a.arg)
+            except (TypeError, ValueError):
+                raise SystemExit("forgeone: forgeone goal budget G-xxxxxx 2.50") from None
+            g.budget_usd = usd
             if g.status == "paused":
-                g.note = f"budget raised to ${a.usd:.2f}: continue with forgeone goal run {g.id}"
+                g.note = f"budget raised to ${usd:.2f}: continue with forgeone goal run {g.id}"
         else:
             g.status, g.note = "cancelled", "cancelled by you"
         store.save(g)
@@ -497,10 +510,11 @@ def main(argv: list[str] | None = None) -> None:
     e.add_argument("--spec", default=None)
     e.set_defaults(fn=_eval)
 
-    go = sub.add_parser("goal", help="goals: new, list, show, run, replan, budget, cancel")
-    go.add_argument("action", choices=["new", "list", "show", "run", "replan", "budget", "cancel"])
+    go = sub.add_parser("goal", help="goals: new, list, show, run, retry, replan, budget, cancel")
+    go.add_argument("action", choices=["new", "list", "show", "run", "retry", "replan", "budget", "cancel"])
     go.add_argument("title", nargs="?", help="the goal title (new) or goal id (other actions)")
-    go.add_argument("usd", nargs="?", type=float, help="new budget in USD (budget)")
+    go.add_argument("arg", nargs="?", help="new budget in USD (budget), or the task to retry: 2.3 or T-xxxxxx (retry)")
+    go.add_argument("--note", default=None, help="retry: a hint for the next attempt")
     go.add_argument("--description", "-d", default=None)
     go.add_argument("--file", default=None, help="read the description from a file (e.g. a goal.md)")
     go.add_argument("--agent", default=None, help="registered agent that does the web tasks, e.g. voyagerone")
